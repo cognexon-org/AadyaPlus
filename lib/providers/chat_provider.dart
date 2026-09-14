@@ -1,9 +1,10 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:aadya_plus/utils/constants.dart';
+import 'package:aadya_plus/services/secure_storage_service.dart';
 import 'package:aadya_plus/models/chat_message.dart';
 
 class ChatProvider with ChangeNotifier {
@@ -20,10 +21,7 @@ class ChatProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   bool get isLoadingSessions => _isLoadingSessions;
 
-  Future<String?> _getToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(AppConstants.tokenKey);
-  }
+  Future<String?> _getToken() => SecureStorageService.instance.readToken();
 
   Future<void> loadSessions() async {
     _isLoadingSessions = true;
@@ -122,8 +120,7 @@ class ChatProvider with ChangeNotifier {
       _socket!.dispose();
     }
 
-    final uri = Uri.parse(AppConstants.baseUrl);
-    final socketUrl = '${uri.scheme}://${uri.host}${uri.hasPort ? ':${uri.port}' : ''}';
+    final socketUrl = AppConstants.socketBaseUrl;
 
     _socket = IO.io(socketUrl, IO.OptionBuilder()
         .setTransports(['websocket'])

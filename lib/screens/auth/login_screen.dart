@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:aadya_plus/providers/auth_provider.dart';
 import 'package:aadya_plus/screens/auth/register_screen.dart';
-import 'package:aadya_plus/screens/home/dashboard_screen.dart';
 import 'package:aadya_plus/utils/constants.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -36,18 +35,12 @@ class _LoginScreenState extends State<LoginScreen> {
         _passwordController.text.trim(),
       );
 
-      if (mounted) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (context) => const DashboardScreen()),
-          (route) => false,
-        );
-      }
+      // AppWrapper reacts to AuthProvider and routes to profile setup/dashboard.
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Login failed: $e'),
+            content: Text(e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '')),
             backgroundColor: Colors.red,
           ),
         );

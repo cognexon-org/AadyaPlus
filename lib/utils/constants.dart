@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 
 class AppConstants {
   static const String appName = 'Aadya Plus';
@@ -8,23 +9,69 @@ class AppConstants {
   static const Color textColor = Color(0xFF0F172A); // tailwind slate-900
   static const Color lightTextColor = Color(0xFF64748B); // tailwind slate-500
 
-  // API endpoints
-  static const String baseUrl = 'http://13.48.49.45/api';
-  static const String loginUrl = '$baseUrl/auth/login';
-  static const String registerUrl = '$baseUrl/auth/register';
-  static const String doctorsUrl = '$baseUrl/doctor';
-  static const String physiosUrl = '$baseUrl/physio';
-  static const String appointmentsUrl = '$baseUrl/appointment';
-  static const String medicinesUrl = '$baseUrl/medicine';
-  static const String labTestsUrl = '$baseUrl/labtest';
-  static const String chatUrl = '$baseUrl/chat';
-  static const String pharmacyUrl = '$baseUrl/pharmacy';
-  static const String prescriptionsUrl = '$baseUrl/prescription';
-  static const String pathologyUrl = '$baseUrl/pathology';
-  static const String notificationsUrl = '$baseUrl/notifications';
-  static const String paymentsUrl = '$baseUrl/payment';
+  /// Compile-time API configuration.
+  ///
+  /// Production example:
+  /// flutter build apk \\
+  ///   --dart-define=AADYA_API_BASE_URL=https://api.example.com/api \\
+  ///   --dart-define=AADYA_SOCKET_BASE_URL=https://api.example.com
+  ///
+  /// Release builds require AADYA_API_BASE_URL. Debug builds retain the old
+  /// endpoint only as a developer fallback so existing local workflows continue
+  /// to run while teams transition their launch configurations.
+  static const String _configuredApiBaseUrl = String.fromEnvironment(
+    'AADYA_API_BASE_URL',
+    defaultValue: '',
+  );
 
-  // Shared Preferences Keys
+  static const String _configuredSocketBaseUrl = String.fromEnvironment(
+    'AADYA_SOCKET_BASE_URL',
+    defaultValue: '',
+  );
+
+  static String get baseUrl {
+    final configured = _stripTrailingSlash(_configuredApiBaseUrl);
+    if (configured.isNotEmpty) return configured;
+    if (kReleaseMode) {
+      throw StateError(
+        'AADYA_API_BASE_URL is required for release builds. ' 
+        'Pass --dart-define=AADYA_API_BASE_URL=https://<host>/api',
+      );
+    }
+    return 'http://13.48.49.45/api';
+  }
+
+  static String get socketBaseUrl {
+    final configured = _stripTrailingSlash(_configuredSocketBaseUrl);
+    if (configured.isNotEmpty) return configured;
+
+    final apiUri = Uri.parse(baseUrl);
+    final path = apiUri.path.endsWith('/api')
+        ? apiUri.path.substring(0, apiUri.path.length - 4)
+        : apiUri.path;
+    return apiUri.replace(path: path.isEmpty ? '/' : path).toString().replaceFirst(RegExp(r'/$'), '');
+  }
+
+  static String _stripTrailingSlash(String value) =>
+      value.trim().replaceFirst(RegExp(r'/+$'), '');
+
+  // API endpoints
+  static String get loginUrl => '$baseUrl/auth/login';
+  static String get registerUrl => '$baseUrl/auth/register';
+  static String get doctorsUrl => '$baseUrl/doctor';
+  static String get physiosUrl => '$baseUrl/physio';
+  static String get appointmentsUrl => '$baseUrl/appointment';
+  static String get medicinesUrl => '$baseUrl/medicine';
+  static String get labTestsUrl => '$baseUrl/labtest';
+  static String get chatUrl => '$baseUrl/chat';
+  static String get pharmacyUrl => '$baseUrl/pharmacy';
+  static String get prescriptionsUrl => '$baseUrl/prescription';
+  static String get pathologyUrl => '$baseUrl/pathology';
+  static String get notificationsUrl => '$baseUrl/notifications';
+  static String get paymentsUrl => '$baseUrl/payment';
+
+  // Storage Keys
+  // tokenKey is kept stable to support one-time migration from old builds.
   static const String tokenKey = 'auth_token';
   static const String userKey = 'user_data';
   static const String cartKey = 'cart_items';
@@ -63,4 +110,3 @@ class Categories {
     {'image': 'https://cdn-icons-png.flaticon.com/512/1301/1301474.png', 'title': 'Lab Tests', 'route': 'lab_tests'},
   ];
 }
-

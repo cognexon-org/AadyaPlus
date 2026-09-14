@@ -9,6 +9,7 @@ import 'package:aadya_plus/providers/pharmacy_provider.dart';
 import 'package:aadya_plus/providers/prescription_provider.dart';
 import 'package:aadya_plus/providers/notification_provider.dart';
 import 'package:aadya_plus/screens/auth/login_screen.dart';
+import 'package:aadya_plus/screens/auth/complete_patient_profile_screen.dart';
 import 'package:aadya_plus/screens/home/dashboard_screen.dart';
 import 'package:provider/provider.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -63,8 +64,14 @@ class AppWrapper extends StatelessWidget {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
-    return authProvider.isAuthenticated
-        ? const DashboardScreen()
-        : const LoginScreen();
+    if (!authProvider.isAuthenticated) {
+      return const LoginScreen();
+    }
+
+    if (authProvider.needsProfileCompletion) {
+      return const CompletePatientProfileScreen();
+    }
+
+    return const DashboardScreen();
   }
 }

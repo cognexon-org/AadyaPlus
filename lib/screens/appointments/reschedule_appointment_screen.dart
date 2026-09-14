@@ -1,12 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:aadya_plus/models/appointment.dart';
 import 'package:aadya_plus/providers/appointment_provider.dart';
 import 'package:aadya_plus/utils/constants.dart';
+import 'package:aadya_plus/services/secure_storage_service.dart';
 
 class RescheduleAppointmentScreen extends StatefulWidget {
   final Appointment appointment;
@@ -129,8 +129,7 @@ class _RescheduleAppointmentScreenState
     setState(() => _isRescheduling = true);
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(AppConstants.tokenKey);
+      final token = await SecureStorageService.instance.readToken();
 
       final rescheduleData = {
         'newDate': _selectedDate,

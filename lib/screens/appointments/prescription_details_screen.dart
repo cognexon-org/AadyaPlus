@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:google_fonts/google_fonts.dart';
 import 'package:iconsax/iconsax.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:aadya_plus/utils/constants.dart';
+import 'package:aadya_plus/services/secure_storage_service.dart';
 
 class PrescriptionDetailsScreen extends StatefulWidget {
   final String prescriptionId;
@@ -28,8 +28,7 @@ class _PrescriptionDetailsScreenState extends State<PrescriptionDetailsScreen> {
 
   Future<void> _fetchPrescription() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(AppConstants.tokenKey);
+      final token = await SecureStorageService.instance.readToken();
 
       final response = await http.get(
         Uri.parse('${AppConstants.baseUrl}/prescription/${widget.prescriptionId}'),

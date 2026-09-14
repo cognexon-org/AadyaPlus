@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'package:aadya_plus/utils/constants.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:aadya_plus/services/secure_storage_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class NearbyPharmacyScreen extends StatefulWidget {
@@ -98,8 +98,7 @@ class _NearbyPharmacyScreenState extends State<NearbyPharmacyScreen> {
     setState(() => _loading = true);
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(AppConstants.tokenKey);
+      final token = await SecureStorageService.instance.readToken();
 
       final uri = Uri.parse('${AppConstants.pharmacyUrl}/all').replace(
         queryParameters: {

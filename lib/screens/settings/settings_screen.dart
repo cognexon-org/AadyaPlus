@@ -140,12 +140,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           child: const Text('Cancel'),
                         ),
                         TextButton(
-                          onPressed: () {
+                          onPressed: () async {
                             Navigator.pop(context);
-                            Provider.of<AuthProvider>(context, listen: false)
+                            await Provider.of<AuthProvider>(context, listen: false)
                                 .logout();
-                            Navigator.of(context)
-                                .pushNamedAndRemoveUntil('/login', (_) => false);
+                            if (!context.mounted) return;
+                            Navigator.of(context).popUntil((route) => route.isFirst);
                           },
                           child: const Text(
                             'Logout',

@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:aadya_plus/models/lab_test.dart';
 import 'package:aadya_plus/utils/constants.dart';
+import 'package:aadya_plus/services/secure_storage_service.dart';
 
 class LabTestProvider with ChangeNotifier {
   List<LabTest> _labTests = [];
@@ -26,8 +26,7 @@ class LabTestProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(AppConstants.tokenKey);
+      final token = await SecureStorageService.instance.readToken();
       
       final response = await http.get(
         Uri.parse(AppConstants.labTestsUrl),

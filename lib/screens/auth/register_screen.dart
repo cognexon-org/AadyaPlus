@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:aadya_plus/providers/auth_provider.dart';
-import 'package:aadya_plus/screens/home/dashboard_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -53,18 +52,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _phoneController.text.trim(),
       );
       
-      if (mounted) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (context) => const DashboardScreen()),
-          (route) => false,
-        );
-      }
+      // AppWrapper routes newly registered patients to profile completion.
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Registration failed: $e'),
+            content: Text(e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '')),
             backgroundColor: Colors.red,
           ),
         );
@@ -94,8 +87,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     ),
                   ),
                   validator: (value) {
-                    if (value == null || value.isEmpty) {
+                    if (value == null || value.trim().isEmpty) {
                       return 'Please enter your name';
+                    }
+                    if (value.trim().length < 2) {
+                      return 'Name must be at least 2 characters';
                     }
                     return null;
                   },
@@ -136,8 +132,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     if (value == null || value.isEmpty) {
                       return 'Please enter your phone number';
                     }
-                    if (value.length < 10) {
-                      return 'Please enter a valid phone number';
+                    if (!RegExp(r'^\d{10}$').hasMatch(value.trim())) {
+                      return 'Enter a valid 10-digit phone number';
                     }
                     return null;
                   },

@@ -1,10 +1,10 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:aadya_plus/models/doctor.dart';
 import 'package:aadya_plus/utils/constants.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:aadya_plus/services/secure_storage_service.dart';
 
 class DoctorProvider with ChangeNotifier {
   List<Doctor> _doctors = [];
@@ -114,8 +114,7 @@ class DoctorProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString(AppConstants.tokenKey);
+      final token = await SecureStorageService.instance.readToken();
 
       // Fetch both doctors and physios in parallel
       final results = await Future.wait([
