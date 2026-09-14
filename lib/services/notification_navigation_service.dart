@@ -6,6 +6,7 @@ import 'package:aadya_plus/screens/payments/payments_screen.dart';
 import 'package:aadya_plus/screens/pharmacy/pharmacy_order_details_screen.dart';
 import 'package:aadya_plus/screens/pharmacy/pharmacy_orders_screen.dart';
 import 'package:aadya_plus/screens/prescriptions/prescriptions_screen.dart';
+import 'package:aadya_plus/screens/physiotherapy/physio_exercise_plan_detail_screen.dart';
 import 'package:flutter/material.dart';
 
 /// Central deep-link router for in-app and push notifications.
@@ -49,9 +50,13 @@ class NotificationNavigationService {
       data['orderId'],
       data['entityId'],
     ]);
+    final exercisePlanId = _firstNonEmpty([data['exercisePlanId']]);
+    final screenHint = (data['screen'] ?? '').toString().toLowerCase();
 
     Widget screen;
-    if (type == 'appointment' || relatedEntity.contains('appointment')) {
+    if (exercisePlanId.isNotEmpty || screenHint == 'physio_exercise_plan') {
+      screen = PhysioExercisePlanDetailScreen(planId: exercisePlanId);
+    } else if (type == 'appointment' || relatedEntity.contains('appointment')) {
       screen = const AppointmentsScreen();
     } else if (type == 'prescription' ||
         relatedEntity.contains('prescription')) {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:aadya_plus/utils/constants.dart';
+import 'my_physio_exercise_plans.dart';
 
 class PhysiotherapyScreen extends StatelessWidget {
   const PhysiotherapyScreen({super.key});
@@ -50,29 +51,7 @@ class PhysiotherapyScreen extends StatelessWidget {
       },
     ];
 
-    final exercisePrograms = [
-      {
-        'name': 'Lower Back Relief',
-        'duration': '4 weeks',
-        'sessions': '12 sessions',
-        'level': 'Beginner',
-        'color': Colors.blue,
-      },
-      {
-        'name': 'Knee Strengthening',
-        'duration': '6 weeks',
-        'sessions': '18 sessions',
-        'level': 'Intermediate',
-        'color': Colors.green,
-      },
-      {
-        'name': 'Post-Op Recovery',
-        'duration': '8 weeks',
-        'sessions': '24 sessions',
-        'level': 'Advanced',
-        'color': Colors.orange,
-      },
-    ];
+
 
     return Scaffold(
       appBar: AppBar(
@@ -327,75 +306,16 @@ class PhysiotherapyScreen extends StatelessWidget {
                   )),
               const SizedBox(height: 24),
 
-              // Exercise Programs
+              // Live exercise plans assigned by the treating physiotherapist.
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16),
                 child: Text(
-                  'Exercise Programs',
+                  'My Exercise Plans',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
               ),
               const SizedBox(height: 12),
-              SizedBox(
-                height: 150,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  itemCount: exercisePrograms.length,
-                  itemBuilder: (context, index) {
-                    final prog = exercisePrograms[index];
-                    return Container(
-                      width: 200,
-                      margin: const EdgeInsets.symmetric(horizontal: 4),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: (prog['color'] as Color).withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: (prog['color'] as Color).withOpacity(0.2),
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: prog['color'] as Color,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              prog['level'] as String,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            prog['name'] as String,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                            ),
-                          ),
-                          const Spacer(),
-                          Text(
-                            '${prog['duration']} • ${prog['sessions']}',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey[600],
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
+              const MyPhysioExercisePlans(),
               const SizedBox(height: 32),
             ],
           ),
