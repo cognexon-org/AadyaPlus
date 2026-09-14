@@ -1,30 +1,30 @@
 import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:aadya_plus/services/api_client.dart' as http;
+import 'dart:io';
+
 import 'package:aadya_plus/models/prescription.dart';
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:aadya_plus/services/secure_storage_service.dart';
+import 'package:aadya_plus/services/api_client.dart' as http;
+import 'package:flutter/material.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 
 class PrescriptionProvider with ChangeNotifier {
   List<Prescription> _prescriptions = [];
   bool _isLoading = false;
   String _filter = 'all';
+  String? _error;
 
   List<Prescription> get prescriptions => _getFilteredPrescriptions();
   List<Prescription> get allPrescriptions => _prescriptions;
   bool get isLoading => _isLoading;
   String get filter => _filter;
+  String? get error => _error;
 
   int get totalCount => _prescriptions.length;
-  int get activeCount =>
-      _prescriptions.where((p) => p.isActive).length;
+  int get activeCount => _prescriptions.where((p) => p.isActive).length;
   int get pendingOrdersCount => _prescriptions
-      .where((p) =>
-          p.pharmacyStatus == 'not_dispensed' ||
-          p.pharmacyStatus == 'partially_dispensed')
+      .where((p) => p.pharmacyStatus == 'not_dispensed' || p.pharmacyStatus == 'partially_dispensed')
       .length;
-  int get expiredCount =>
-      _prescriptions.where((p) => p.isExpired).length;
+  int get expiredCount => _prescriptions.where((p) => p.isExpired).length;
 
   PrescriptionProvider() {
     loadPrescriptions();
@@ -32,85 +32,51 @@ class PrescriptionProvider with ChangeNotifier {
 
   Future<void> loadPrescriptions() async {
     _isLoading = true;
+    _error = null;
     notifyListeners();
-
     try {
-      final token = await SecureStorageService.instance.readToken();
-
-      if (token == null) {
-        _isLoading = false;
-        notifyListeners();
-        return; // Non-auth users have no prescriptions
-      }
-
-      final response = await http.get(
-        Uri.parse(AppConstants.prescriptionsUrl),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-      );
-
-      final responseData = json.decode(response.body);
-
-      if (response.statusCode == 200 && responseData['success'] == true) {
-        final List<dynamic> prescDocs = responseData['prescriptions'] ?? [];
-
-        _prescriptions = prescDocs.map((doc) {
-          final professionalType = doc['professionalType'] ?? 'doctor';
-          
-          String doctorName = 'Unknown Doc';
-          String docSpecialty = 'General';
-          
-          if (doc['doctorId'] != null && professionalType == 'doctor') {
-            doctorName = doc['doctorId']['name'] ?? 'Unknown Doctor';
-            docSpecialty = (doc['doctorId']['specialization'] != null && (doc['doctorId']['specialization'] as List).isNotEmpty) ? doc['doctorId']['specialization'][0] : 'General';
-          } else if (doc['physioId'] != null && professionalType == 'physio') {
-            doctorName = doc['physioId']['name'] ?? 'Unknown Physio';
-            docSpecialty = 'Physiotherapy';
-          }
-
-          final List<dynamic> backendMeds = doc['medicines'] ?? [];
-          final List<PrescribedMedicine> myMeds = backendMeds.map((med) {
-             return PrescribedMedicine(
-                medicineName: med['medicineName'] ?? 'Unknown',
-                genericName: med['genericName'] ?? '',
-                dosage: med['dosage'] ?? '',
-                frequency: med['frequency'] ?? '',
-                duration: med['duration'] ?? '',
-                prescribedQuantity: med['quantity'] ?? 0,
-                dispensedQuantity: 0, // Could match against doc['dispensedItems']
-                instructions: med['instructions'] ?? '',
-             );
-          }).toList();
-
-          final List<dynamic> backendDiagnosis = doc['diagnosis'] ?? [];
-
-          return Prescription(
-            id: doc['_id'] ?? '',
-            doctorName: doctorName,
-            doctorSpecialization: docSpecialty,
-            issuedAt: doc['issuedAt'] != null ? DateTime.parse(doc['issuedAt']) : DateTime.now(),
-            validUntil: doc['expiresAt'] != null ? DateTime.parse(doc['expiresAt']) : DateTime.now().add(const Duration(days: 30)),
-            status: doc['status'] ?? 'issued',
-            pharmacyStatus: doc['pharmacyStatus'] ?? 'not_dispensed',
-            diagnosis: backendDiagnosis.map((d) => d.toString()).toList(),
-            medicines: myMeds,
-            advice: doc['notes'] ?? '',
-            followupDate: doc['followUpDate'] != null ? DateTime.parse(doc['followUpDate']) : null,
-          );
-        }).toList();
-
+      final response = await http.get(http.apiUri('/prescription', queryParameters: {'limit': 100}));
+      final data = _decode(response.body);
+      if (response.statusCode >= 200 && response.statusCode < 300 && data['success'] == true) {
+        final rows = data['prescriptions'] is List ? data['prescriptions'] as List : const [];
+        _prescriptions = rows
+            .whereType<Map>()
+            .map((row) => Prescription.fromJson(Map<String, dynamic>.from(row)))
+            .toList();
       } else {
-        print('Backend error: ${responseData['message']}');
+        _error = (data['message'] ?? data['error'] ?? 'Failed to load prescriptions').toString();
       }
-
     } catch (e) {
-      print('HTTP error fetching prescriptions: $e');
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
+  }
 
-    _isLoading = false;
-    notifyListeners();
+  Future<Prescription> fetchPrescription(String id) async {
+    final response = await http.get(http.apiUri('/prescription/$id'));
+    final data = _decode(response.body);
+    if (response.statusCode >= 200 && response.statusCode < 300 && data['success'] == true) {
+      return Prescription.fromJson(Map<String, dynamic>.from(data['prescription'] ?? const {}));
+    }
+    throw Exception((data['message'] ?? data['error'] ?? 'Failed to load prescription').toString());
+  }
+
+  Future<String> downloadAndOpenPdf(Prescription prescription) async {
+    final response = await http.get(http.apiUri('/prescription/${prescription.id}/pdf'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final data = _decode(response.body);
+      throw Exception((data['message'] ?? data['error'] ?? 'Unable to download prescription PDF').toString());
+    }
+    final directory = await getTemporaryDirectory();
+    final safeNumber = prescription.prescriptionNumber.isNotEmpty
+        ? prescription.prescriptionNumber.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_')
+        : 'prescription_${prescription.id}';
+    final file = File('${directory.path}/$safeNumber.pdf');
+    await file.writeAsBytes(response.bodyBytes, flush: true);
+    await OpenFilex.open(file.path, type: 'application/pdf');
+    return file.path;
   }
 
   List<Prescription> _getFilteredPrescriptions() {
@@ -120,9 +86,7 @@ class PrescriptionProvider with ChangeNotifier {
       case 'expired':
         return _prescriptions.where((p) => p.isExpired).toList();
       case 'completed':
-        return _prescriptions
-            .where((p) => p.pharmacyStatus == 'fully_dispensed')
-            .toList();
+        return _prescriptions.where((p) => p.pharmacyStatus == 'fully_dispensed').toList();
       default:
         return _prescriptions;
     }
@@ -141,5 +105,17 @@ class PrescriptionProvider with ChangeNotifier {
           p.diagnosis.any((d) => d.toLowerCase().contains(q)) ||
           p.medicines.any((m) => m.medicineName.toLowerCase().contains(q));
     }).toList();
+  }
+
+  Map<String, dynamic> _decode(String body) {
+    if (body.trim().isEmpty) return <String, dynamic>{};
+    try {
+      final decoded = json.decode(body);
+      return decoded is Map<String, dynamic>
+          ? decoded
+          : Map<String, dynamic>.from(decoded as Map);
+    } catch (_) {
+      return <String, dynamic>{};
+    }
   }
 }

@@ -29,6 +29,11 @@ class AppConstants {
     defaultValue: '',
   );
 
+  static const String _configuredRazorpayKeyId = String.fromEnvironment(
+    'AADYA_RAZORPAY_KEY_ID',
+    defaultValue: '',
+  );
+
   static String get baseUrl {
     final configured = _stripTrailingSlash(_configuredApiBaseUrl);
     if (configured.isNotEmpty) return configured;
@@ -52,6 +57,8 @@ class AppConstants {
     return apiUri.replace(path: path.isEmpty ? '/' : path).toString().replaceFirst(RegExp(r'/$'), '');
   }
 
+  static String get razorpayKeyId => _configuredRazorpayKeyId.trim();
+
   static String _stripTrailingSlash(String value) =>
       value.trim().replaceFirst(RegExp(r'/+$'), '');
 
@@ -69,6 +76,7 @@ class AppConstants {
   static String get pathologyUrl => '$baseUrl/pathology';
   static String get notificationsUrl => '$baseUrl/notifications';
   static String get paymentsUrl => '$baseUrl/payment';
+  static String get consultationsUrl => '$baseUrl/consultations';
 
   // Storage Keys
   // tokenKey is kept stable to support one-time migration from old builds.

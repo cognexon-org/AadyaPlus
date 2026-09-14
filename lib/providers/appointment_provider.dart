@@ -101,14 +101,17 @@ class AppointmentProvider with ChangeNotifier {
             patientName: (doc['patientId'] is Map) ? doc['patientId']['name']?.toString() ?? 'Me' : 'Me',
             dateTime: parsedDate,
             status: doc['status']?.toString() ?? 'pending',
-            consultationFee: doc['totalAmount']?.toDouble() ?? doc['consultationFee']?.toDouble() ?? 0.0,
+            consultationFee: (doc['consultationFee'] is num) ? (doc['consultationFee'] as num).toDouble() : ((doc['totalAmount'] is num) ? (doc['totalAmount'] as num).toDouble() : 0.0),
+            totalAmount: (doc['totalAmount'] is num) ? (doc['totalAmount'] as num).toDouble() : ((doc['consultationFee'] is num) ? (doc['consultationFee'] as num).toDouble() : 0.0),
+            paymentStatus: doc['paymentStatus']?.toString() ?? 'pending',
             appointmentType: doc['type']?.toString() ?? 'clinic',
             symptoms: doc['symptoms'] != null && (doc['symptoms'] as List).isNotEmpty ? doc['symptoms'][0].toString() : null,
             createdAt: doc['createdAt'] != null ? DateTime.parse(doc['createdAt'].toString()) : DateTime.now(),
             meetingLink: doc['meetingLink']?.toString(),
             startTime: rawStartTime,
             reason: doc['reason']?.toString(),
-            prescriptionId: doc['prescriptionId']?.toString(),
+            prescriptionId: doc['prescriptionId'] is Map ? doc['prescriptionId']['_id']?.toString() : doc['prescriptionId']?.toString(),
+            consultationSessionId: doc['consultationSessionId'] is Map ? doc['consultationSessionId']['_id']?.toString() : doc['consultationSessionId']?.toString(),
             professionalType: professionalType,
             duration: doc['duration'] ?? 30,
           );
@@ -228,26 +231,7 @@ class AppointmentProvider with ChangeNotifier {
         final index = _appointments.indexWhere((apt) => apt.id == appointmentId);
         if (index != -1) {
           final apt = _appointments[index];
-          _appointments[index] = Appointment(
-            id: apt.id,
-            doctorId: apt.doctorId,
-            doctorName: apt.doctorName,
-            specialty: apt.specialty,
-            hospital: apt.hospital,
-            patientName: apt.patientName,
-            dateTime: apt.dateTime,
-            status: 'cancelled',
-            consultationFee: apt.consultationFee,
-            appointmentType: apt.appointmentType,
-            symptoms: apt.symptoms,
-            createdAt: apt.createdAt,
-            meetingLink: apt.meetingLink,
-            startTime: apt.startTime,
-            reason: apt.reason,
-            prescriptionId: apt.prescriptionId,
-            professionalType: apt.professionalType,
-            duration: apt.duration,
-          );
+          _appointments[index] = apt.copyWith(status: 'cancelled');
         }
       } else {
          throw Exception(responseData['error'] ?? 'Failed to cancel appointment');
