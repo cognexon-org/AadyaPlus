@@ -77,6 +77,8 @@ class AppConstants {
   static String get notificationsUrl => '$baseUrl/notifications';
   static String get paymentsUrl => '$baseUrl/payment';
   static String get consultationsUrl => '$baseUrl/consultations';
+  static String get ePharmacyUrl => '$baseUrl/epharmacy';
+  static String get diagnosticsUrl => '$baseUrl/diagnostics';
 
   // Storage Keys
   // tokenKey is kept stable to support one-time migration from old builds.

@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:aadya_plus/providers/auth_provider.dart';
 import 'package:aadya_plus/providers/doctor_provider.dart';
 import 'package:aadya_plus/providers/appointment_provider.dart';
-import 'package:aadya_plus/providers/medicine_provider.dart';
 import 'package:aadya_plus/providers/lab_test_provider.dart';
 import 'package:aadya_plus/providers/pharmacy_provider.dart';
 import 'package:aadya_plus/providers/prescription_provider.dart';
@@ -27,7 +26,6 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => DoctorProvider()),
         ChangeNotifierProvider(create: (_) => AppointmentProvider()),
-        ChangeNotifierProvider(create: (_) => MedicineProvider()),
         ChangeNotifierProvider(create: (_) => LabTestProvider()),
         ChangeNotifierProvider(create: (_) => ChatProvider()),
         ChangeNotifierProvider(create: (_) => PharmacyProvider()),

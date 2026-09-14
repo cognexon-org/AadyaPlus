@@ -1,95 +1,102 @@
-import 'dart:convert';
+import 'package:aadya_plus/services/diagnostics_service.dart';
 import 'package:flutter/material.dart';
-import 'package:aadya_plus/services/api_client.dart' as http;
-import 'package:aadya_plus/models/lab_test.dart';
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:aadya_plus/services/secure_storage_service.dart';
 
 class LabTestProvider with ChangeNotifier {
-  List<LabTest> _labTests = [];
-  List<LabTest> _bookedTests = [];
+  final DiagnosticsService _api = DiagnosticsService.instance;
+
+  List<Map<String, dynamic>> _catalog = [];
+  List<Map<String, dynamic>> _orders = [];
   bool _isLoading = false;
   String? _error;
 
-  List<LabTest> get labTests => _labTests;
-  List<LabTest> get bookedTests => _bookedTests;
+  List<Map<String, dynamic>> get catalog => _catalog;
+  List<Map<String, dynamic>> get orders => _orders;
   bool get isLoading => _isLoading;
   String? get error => _error;
 
   LabTestProvider() {
-    loadLabTests();
+    refresh();
   }
 
-  Future<void> loadLabTests() async {
+  Future<void> refresh() async {
+    await Future.wait([searchCatalog(), loadOrders()]);
+  }
+
+  Future<void> searchCatalog({String? query, bool homeCollection = false, String? pincode}) async {
+    await _run(() async {
+      _catalog = await _api.searchCatalog(query: query, homeCollection: homeCollection, pincode: pincode);
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> slots(String labId, DateTime date) => _api.slots(labId, date);
+
+  Future<Map<String, dynamic>> book({
+    required Map<String, dynamic> catalogItem,
+    required DateTime date,
+    required String startTime,
+    required String endTime,
+    required String type,
+    Map<String, dynamic>? collectionAddress,
+    String? patientInstructions,
+  }) async {
+    final kind = (catalogItem['kind'] ?? '').toString();
+    final item = Map<String, dynamic>.from(catalogItem['item'] ?? const {});
+    final code = (kind == 'package' ? item['packageCode'] : item['testCode'])?.toString() ?? '';
+    final order = await _api.createOrder(
+      labId: (catalogItem['labId'] ?? '').toString(),
+      testCodes: kind == 'test' && code.isNotEmpty ? [code] : const [],
+      packageCodes: kind == 'package' && code.isNotEmpty ? [code] : const [],
+      date: date,
+      startTime: startTime,
+      endTime: endTime,
+      type: type,
+      collectionAddress: collectionAddress,
+      patientInstructions: patientInstructions,
+    );
+    await loadOrders();
+    return order;
+  }
+
+  Future<void> loadOrders({String? status}) async {
+    try {
+      _orders = await _api.orders(status: status);
+      _error = null;
+      notifyListeners();
+    } catch (e) {
+      _error = e.toString().replaceFirst('Exception: ', '');
+      notifyListeners();
+    }
+  }
+
+  Future<Map<String, dynamic>> getOrder(String id) => _api.order(id);
+
+  Future<void> cancelOrder(String id) async {
+    await _api.cancel(id);
+    await loadOrders();
+  }
+
+  Future<Map<String, dynamic>> reschedule({
+    required String id,
+    required DateTime date,
+    required String startTime,
+    required String endTime,
+  }) async {
+    final order = await _api.reschedule(id: id, date: date, startTime: startTime, endTime: endTime);
+    await loadOrders();
+    return order;
+  }
+
+  Future<void> _run(Future<void> Function() operation) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
-
     try {
-      final token = await SecureStorageService.instance.readToken();
-      
-      final response = await http.get(
-        Uri.parse(AppConstants.labTestsUrl),
-        headers: {
-          'Content-Type': 'application/json',
-          if (token != null) 'Authorization': 'Bearer $token',
-        },
-      );
-
-      final responseData = json.decode(response.body);
-
-      if (response.statusCode == 200 && responseData['success'] == true) {
-        final List<dynamic> tests = responseData['data'] ?? responseData['labTests'] ?? [];
-        
-        _labTests = tests.map((doc) {
-          return LabTest(
-            id: doc['_id'] ?? '',
-            name: doc['testName'] ?? 'Unknown Test',
-            description: doc['description'] ?? '',
-            price: doc['price']?.toDouble() ?? 0.0,
-            discountPrice: doc['discountPrice']?.toDouble() ?? (doc['price']?.toDouble() ?? 0.0),
-            preparation: doc['preparation'] ?? 'No special preparation',
-            reportTime: doc['turnAroundTime'] ?? '24 hours',
-            parameters: doc['parameters'] != null ? List<String>.from(doc['parameters'].map((p) => p['name'] ?? '')) : [],
-            fastingRequired: doc['fastingRequired'] ?? false,
-          );
-        }).toList();
-      } else {
-        _error = responseData['message'] ?? 'Failed to load lab tests';
-      }
+      await operation();
     } catch (e) {
-      _error = 'Network error: $e';
+      _error = e.toString().replaceFirst('Exception: ', '');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  Future<void> bookLabTest(LabTest test, DateTime date) async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-        // Implement real booking when backend endpoint is ready
-        // await http.post(...)
-        await Future.delayed(const Duration(seconds: 1));
-        _bookedTests.add(test);
-    } catch (e) {
-        _error = 'Booking error: $e';
-        throw e;
-    }
-    
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  List<LabTest> searchLabTests(String query) {
-    if (query.isEmpty) return _labTests;
-    return _labTests
-        .where((test) =>
-            test.name.toLowerCase().contains(query.toLowerCase()) ||
-            test.description.toLowerCase().contains(query.toLowerCase()))
-        .toList();
   }
 }

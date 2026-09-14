@@ -153,3 +153,31 @@ Uri apiUri(String path, {Map<String, dynamic>? queryParameters}) {
     ),
   );
 }
+
+/// Authenticated multipart POST for backend file uploads.
+///
+/// [fields] are encoded as normal multipart form fields. [fileField] and
+/// [filePath] are optional so callers can use this for form-only multipart
+/// requests too. Aadya JWT attachment follows the same backend-origin rule as
+/// the normal request helpers above.
+Future<native_http.Response> multipartPost(
+  Uri url, {
+  Map<String, String>? headers,
+  Map<String, String>? fields,
+  String? fileField,
+  String? filePath,
+}) async {
+  final request = native_http.MultipartRequest('POST', url);
+  request.headers.addAll(await _buildHeaders(url, headers));
+  request.fields.addAll(fields ?? const <String, String>{});
+  if (fileField != null && filePath != null && filePath.isNotEmpty) {
+    request.files.add(await native_http.MultipartFile.fromPath(fileField, filePath));
+  }
+  final streamed = await _client.send(request);
+  final response = await native_http.Response.fromStream(streamed);
+  if (_isBackendRequest(url) && response.statusCode == 401) {
+    final handler = _unauthorizedHandler;
+    if (handler != null) await handler();
+  }
+  return response;
+}

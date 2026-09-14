@@ -1,227 +1,251 @@
-import 'dart:convert';
+import 'package:aadya_plus/services/e_pharmacy_service.dart';
 import 'package:flutter/material.dart';
-import 'package:aadya_plus/services/api_client.dart' as http;
-import 'package:aadya_plus/models/pharmacy_product.dart';
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:aadya_plus/services/secure_storage_service.dart';
-
-class PharmacyCategory {
-  final String id;
-  final String name;
-  final IconData icon;
-  final int count;
-  final Color color;
-
-  PharmacyCategory({
-    required this.id,
-    required this.name,
-    required this.icon,
-    this.count = 0,
-    required this.color,
-  });
-}
 
 class PharmacyProvider with ChangeNotifier {
-  List<PharmacyProduct> _featuredProducts = [];
-  List<PharmacyProduct> _dealsProducts = [];
-  List<PharmacyProduct> _allProducts = [];
-  List<CartItem> _cartItems = [];
-  List<String> _wishlistIds = [];
+  final EPharmacyService _api = EPharmacyService.instance;
+
+  List<Map<String, dynamic>> _stores = [];
+  Map<String, dynamic>? _selectedStore;
+  List<Map<String, dynamic>> _products = [];
+  List<Map<String, dynamic>> _cartItems = [];
+  Map<String, dynamic> _cartTotals = {};
+  List<Map<String, dynamic>> _addresses = [];
+  List<Map<String, dynamic>> _prescriptions = [];
+  List<Map<String, dynamic>> _uploads = [];
+  List<Map<String, dynamic>> _orders = [];
   bool _isLoading = false;
+  String? _error;
 
-  List<PharmacyProduct> get featuredProducts => _featuredProducts;
-  List<PharmacyProduct> get dealsProducts => _dealsProducts;
-  List<PharmacyProduct> get allProducts => _allProducts;
-  List<CartItem> get cartItems => _cartItems;
-  List<String> get wishlistIds => _wishlistIds;
+  List<Map<String, dynamic>> get stores => _stores;
+  Map<String, dynamic>? get selectedStore => _selectedStore;
+  List<Map<String, dynamic>> get products => _products;
+  List<Map<String, dynamic>> get cartItems => _cartItems;
+  Map<String, dynamic> get cartTotals => _cartTotals;
+  List<Map<String, dynamic>> get addresses => _addresses;
+  List<Map<String, dynamic>> get prescriptions => _prescriptions;
+  List<Map<String, dynamic>> get uploads => _uploads;
+  List<Map<String, dynamic>> get orders => _orders;
   bool get isLoading => _isLoading;
+  String? get error => _error;
 
-  int get cartCount =>
-      _cartItems.fold(0, (sum, item) => sum + item.quantity);
-
-  double get cartSubtotal =>
-      _cartItems.fold(0.0, (sum, item) => sum + item.totalPrice);
-
-  double get cartDiscount =>
-      _cartItems.fold(0.0, (sum, item) =>
-          sum + (item.product.savings * item.quantity));
-
-  double get deliveryFee => cartSubtotal > 499 ? 0 : 49;
-
-  double get cartTotal => cartSubtotal + deliveryFee;
-
-  List<PharmacyCategory> get categories => [
-        PharmacyCategory(
-            id: '1',
-            name: 'Tablets',
-            icon: Icons.medication,
-            count: 245,
-            color: Colors.blue),
-        PharmacyCategory(
-            id: '2',
-            name: 'Capsules',
-            icon: Icons.circle,
-            count: 189,
-            color: Colors.purple),
-        PharmacyCategory(
-            id: '3',
-            name: 'Syrups',
-            icon: Icons.local_drink,
-            count: 156,
-            color: Colors.green),
-        PharmacyCategory(
-            id: '4',
-            name: 'Injections',
-            icon: Icons.vaccines,
-            count: 98,
-            color: Colors.red),
-        PharmacyCategory(
-            id: '5',
-            name: 'Ointments',
-            icon: Icons.healing,
-            count: 134,
-            color: Colors.amber),
-        PharmacyCategory(
-            id: '6',
-            name: 'Drops',
-            icon: Icons.water_drop,
-            count: 167,
-            color: Colors.indigo),
-        PharmacyCategory(
-            id: '7',
-            name: 'Inhalers',
-            icon: Icons.air,
-            count: 76,
-            color: Colors.cyan),
-        PharmacyCategory(
-            id: '8',
-            name: 'Vitamins',
-            icon: Icons.eco,
-            count: 203,
-            color: Colors.teal),
-      ];
+  int get cartCount => _asInt(_cartTotals['itemCount']);
+  double get cartSubtotal => _asDouble(_cartTotals['merchandiseTotal']);
 
   PharmacyProvider() {
-    loadProducts();
+    bootstrap();
   }
 
-  Future<void> loadProducts() async {
-    _isLoading = true;
-    notifyListeners();
+  Future<void> bootstrap() async {
+    await loadStores();
+    await loadCart();
+    await loadOrders();
+  }
 
+  Future<void> loadStores({String? pincode, String? query}) async {
+    await _run(() async {
+      _stores = await _api.listStores(pincode: pincode, query: query);
+      if (_selectedStore == null && _stores.isNotEmpty) {
+        _selectedStore = _stores.first;
+        await _loadCatalogInternal();
+      } else if (_selectedStore != null) {
+        final selectedId = _id(_selectedStore);
+        final match = _stores.where((s) => _id(s) == selectedId).toList();
+        if (match.isNotEmpty) _selectedStore = match.first;
+      }
+    });
+  }
+
+  Future<void> selectStore(Map<String, dynamic> store) async {
+    _selectedStore = store;
+    _products = [];
+    notifyListeners();
+    await loadCatalog();
+  }
+
+  Future<void> loadCatalog({String? query, String? category, String? rx}) async {
+    await _run(() => _loadCatalogInternal(query: query, category: category, rx: rx));
+  }
+
+  Future<void> _loadCatalogInternal({String? query, String? category, String? rx}) async {
+    final storeId = _id(_selectedStore);
+    if (storeId.isEmpty) {
+      _products = [];
+      return;
+    }
+    final data = await _api.catalog(
+      storeId: storeId,
+      query: query,
+      category: category,
+      rx: rx,
+    );
+    _products = _list(data['products']);
+  }
+
+  Future<void> loadCart() async {
     try {
-      final token = await SecureStorageService.instance.readToken();
-      
-      final response = await http.get(
-        Uri.parse(AppConstants.medicinesUrl), // Need to ensure constants.dart has medicinesUrl
-        headers: {
-          'Content-Type': 'application/json',
-          if (token != null) 'Authorization': 'Bearer $token',
-        },
-      );
-
-      final responseData = json.decode(response.body);
-
-      if (response.statusCode == 200 && responseData['success'] == true) {
-        final List<dynamic> meds = responseData['medicines'] ?? responseData['data'] ?? [];
-
-        final List<PharmacyProduct> fetchedProducts = meds.map((doc) {
-          return PharmacyProduct(
-            id: doc['_id'] ?? '',
-            name: doc['medicineName'] ?? 'Unknown',
-            category: doc['category'] != null ? doc['category'].toString().toUpperCase() : 'OTHER',
-            brand: doc['brandName'] ?? doc['manufacturer'] ?? 'Unknown Brand',
-            price: doc['sellingPrice']?.toDouble() ?? 0.0,
-            discount: doc['discount']?.toDouble() ?? 0.0,
-            rating: 0.0, // Backend might not have ratings yet
-            reviews: 0,
-            stock: doc['quantity'] ?? 0,
-            packSize: '${doc['strength'] ?? ''} ${doc['unit'] ?? ''}'.trim(),
-            prescriptionRequired: doc['prescriptionRequired'] ?? false,
-          );
-        }).toList();
-
-        // Split them up simply for the UI. (Featured = top 5, Deals = ones with discount)
-        if (fetchedProducts.length >= 5) {
-           _featuredProducts = fetchedProducts.take(5).toList();
-        } else {
-           _featuredProducts = fetchedProducts;
-        }
-
-        _dealsProducts = fetchedProducts.where((p) => p.discount > 0).toList();
-        _allProducts = fetchedProducts;
-      } else {
-        print('Backend error loading pharmacy: ${responseData['message']}');
+      final data = await _api.getCart();
+      _cartItems = _list(data['items']);
+      _cartTotals = Map<String, dynamic>.from(data['totals'] ?? const {});
+      final store = data['store'];
+      if (store is Map) {
+        final hydratedStore = Map<String, dynamic>.from(store);
+        if (_cartItems.isNotEmpty || _selectedStore == null) _selectedStore = hydratedStore;
       }
+      _error = null;
+      notifyListeners();
     } catch (e) {
-      print('HTTP error loading medicines: $e');
-    }
-
-    _isLoading = false;
-    notifyListeners();
-  }
-
-  List<PharmacyProduct> searchProducts(String query) {
-    if (query.isEmpty) return _allProducts;
-    final q = query.toLowerCase();
-    return _allProducts.where((p) {
-      return p.name.toLowerCase().contains(q) ||
-          p.category.toLowerCase().contains(q) ||
-          p.brand.toLowerCase().contains(q);
-    }).toList();
-  }
-
-  List<PharmacyProduct> getProductsByCategory(String category) {
-    if (category.isEmpty || category.toLowerCase() == 'all') {
-      return _allProducts;
-    }
-    return _allProducts
-        .where((p) => p.category.toLowerCase() == category.toLowerCase())
-        .toList();
-  }
-
-  void addToCart(PharmacyProduct product, {int quantity = 1}) {
-    final existingIndex =
-        _cartItems.indexWhere((item) => item.product.id == product.id);
-    if (existingIndex != -1) {
-      _cartItems[existingIndex].quantity += quantity;
-    } else {
-      _cartItems.add(CartItem(product: product, quantity: quantity));
-    }
-    notifyListeners();
-  }
-
-  void removeFromCart(String productId) {
-    _cartItems.removeWhere((item) => item.product.id == productId);
-    notifyListeners();
-  }
-
-  void updateCartQuantity(String productId, int quantity) {
-    final index =
-        _cartItems.indexWhere((item) => item.product.id == productId);
-    if (index != -1) {
-      if (quantity <= 0) {
-        _cartItems.removeAt(index);
-      } else {
-        _cartItems[index].quantity = quantity;
-      }
+      // A brand-new patient can legitimately have no cart yet. Keep the UI empty.
+      _cartItems = [];
+      _cartTotals = {};
       notifyListeners();
     }
   }
 
-  void clearCart() {
-    _cartItems.clear();
-    notifyListeners();
-  }
-
-  bool isInWishlist(String productId) => _wishlistIds.contains(productId);
-
-  void toggleWishlist(String productId) {
-    if (_wishlistIds.contains(productId)) {
-      _wishlistIds.remove(productId);
-    } else {
-      _wishlistIds.add(productId);
+  Future<void> addToCart(Map<String, dynamic> product, {int quantity = 1}) async {
+    final storeId = _id(_selectedStore);
+    final medicineId = _id(product);
+    if (storeId.isEmpty || medicineId.isEmpty) throw Exception('Select a pharmacy before adding medicines.');
+    try {
+      final data = await _api.addCartItem(storeId: storeId, medicineId: medicineId, quantity: quantity);
+      _applyCart(data);
+    } on EPharmacyApiException catch (e) {
+      if (e.code == 'CART_STORE_CONFLICT') {
+        throw Exception('${e.message} Open the cart and clear it before switching pharmacy.');
+      }
+      rethrow;
     }
+  }
+
+  Future<void> updateCartQuantity(String medicineId, int quantity) async {
+    final data = await _api.updateCartItem(medicineId, quantity);
+    _applyCart(data);
+  }
+
+  Future<void> removeFromCart(String medicineId) async {
+    final data = await _api.removeCartItem(medicineId);
+    _applyCart(data);
+  }
+
+  Future<void> clearCart() async {
+    await _api.clearCart();
+    _cartItems = [];
+    _cartTotals = {};
     notifyListeners();
   }
+
+  Future<void> loadCheckoutData() async {
+    await _run(() async {
+      final results = await Future.wait([
+        _api.addresses(),
+        _api.prescriptions(),
+        _api.prescriptionUploads(),
+      ]);
+      _addresses = results[0];
+      _prescriptions = results[1];
+      _uploads = results[2];
+    });
+  }
+
+  Future<Map<String, dynamic>> createAddress(Map<String, dynamic> payload) async {
+    final address = await _api.createAddress(payload);
+    await loadCheckoutData();
+    return address;
+  }
+
+  Future<Map<String, dynamic>> uploadPrescription(String filePath) async {
+    final upload = await _api.uploadPrescription(filePath);
+    await loadCheckoutData();
+    return upload;
+  }
+
+  Future<Map<String, dynamic>> quote({
+    required String addressId,
+    required String paymentMethod,
+    String? couponCode,
+    String? prescriptionId,
+    String? prescriptionUploadId,
+  }) {
+    return _api.checkoutQuote(
+      addressId: addressId,
+      paymentMethod: paymentMethod,
+      couponCode: couponCode,
+      prescriptionId: prescriptionId,
+      prescriptionUploadId: prescriptionUploadId,
+    );
+  }
+
+  Future<Map<String, dynamic>> placeOrder({
+    required String addressId,
+    required String paymentMethod,
+    String? couponCode,
+    String? prescriptionId,
+    String? prescriptionUploadId,
+    String? deliveryInstructions,
+  }) async {
+    final order = await _api.createOrder(
+      addressId: addressId,
+      paymentMethod: paymentMethod,
+      couponCode: couponCode,
+      prescriptionId: prescriptionId,
+      prescriptionUploadId: prescriptionUploadId,
+      deliveryInstructions: deliveryInstructions,
+    );
+    _cartItems = [];
+    _cartTotals = {};
+    await loadOrders();
+    notifyListeners();
+    return order;
+  }
+
+  Future<void> loadOrders() async {
+    try {
+      _orders = await _api.orders();
+      notifyListeners();
+    } catch (_) {
+      // Orders are secondary to app startup. Individual order screens surface errors.
+    }
+  }
+
+  Future<Map<String, dynamic>> refreshOrder(String id) => _api.order(id);
+
+  Future<void> cancelOrder(String id) async {
+    await _api.cancelOrder(id);
+    await loadOrders();
+  }
+
+  Future<void> reorder(String id) async {
+    await _api.reorder(id);
+    await loadCart();
+  }
+
+  void _applyCart(Map<String, dynamic> data) {
+    _cartItems = _list(data['items']);
+    _cartTotals = Map<String, dynamic>.from(data['totals'] ?? const {});
+    final store = data['store'];
+    if (store is Map) _selectedStore = Map<String, dynamic>.from(store);
+    _error = null;
+    notifyListeners();
+  }
+
+  Future<void> _run(Future<void> Function() operation) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      await operation();
+    } catch (e) {
+      _error = e.toString().replaceFirst('Exception: ', '');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  static String _id(Map<String, dynamic>? value) => (value?['_id'] ?? value?['id'] ?? '').toString();
+  static List<Map<String, dynamic>> _list(dynamic value) {
+    if (value is! List) return <Map<String, dynamic>>[];
+    return value.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+  static int _asInt(dynamic value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
+  static double _asDouble(dynamic value) => value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
 }
