@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:aadya_plus/models/user.dart';
 import 'package:aadya_plus/services/api_client.dart' as http;
 import 'package:aadya_plus/services/secure_storage_service.dart';
+import 'package:aadya_plus/services/push_notification_service.dart';
 import 'package:aadya_plus/utils/constants.dart';
 
 class AuthProvider with ChangeNotifier {
@@ -257,6 +258,7 @@ class AuthProvider with ChangeNotifier {
 
     try {
       if (await SecureStorageService.instance.readToken() != null) {
+        await PushNotificationService.instance.unregisterAuthenticatedDevice();
         await http.post(
           Uri.parse('${AppConstants.baseUrl}/auth/logout'),
           headers: {'Content-Type': 'application/json'},
@@ -320,6 +322,10 @@ class AuthProvider with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(AppConstants.userKey, json.encode(user.toJson()));
     notifyListeners();
+
+    // Do not block login/session restore if push services are temporarily
+    // unavailable. The service safely no-ops until Firebase is configured.
+    PushNotificationService.instance.syncAuthenticatedDevice();
   }
 
   Future<void> _clearLocalSession({bool notify = true}) async {

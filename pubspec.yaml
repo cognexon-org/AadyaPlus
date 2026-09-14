@@ -58,6 +58,9 @@ dependencies:
   razorpay_flutter: ^1.4.6
   path_provider: ^2.1.6
   open_filex: ^4.7.0
+  firebase_core:
+  firebase_messaging:
+  flutter_local_notifications:
 
 dev_dependencies:
   flutter_test:

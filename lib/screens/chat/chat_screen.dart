@@ -30,7 +30,11 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-    chatProvider.loadChatMessages(widget.doctor.id, appointmentId: widget.appointmentId);
+    chatProvider.loadChatMessages(
+      widget.doctor.id,
+      professionalType: widget.doctor.professionalType,
+      appointmentId: widget.appointmentId,
+    );
     
     if (widget.appointmentId != null) {
       _loadAppointmentContext();
@@ -398,7 +402,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
     final chatProvider = Provider.of<ChatProvider>(context, listen: false);
     chatProvider.sendMessage(
-      doctorId: widget.doctor.id,
       message: _messageController.text.trim(),
       type: MessageType.text,
     );

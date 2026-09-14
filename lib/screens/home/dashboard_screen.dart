@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:aadya_plus/providers/auth_provider.dart';
 import 'package:aadya_plus/providers/doctor_provider.dart';
+import 'package:aadya_plus/providers/notification_provider.dart';
 import 'package:aadya_plus/screens/doctors/doctor_list_screen.dart';
 import 'package:aadya_plus/screens/appointments/appointments_screen.dart';
 import 'package:aadya_plus/screens/search/search_screen.dart';
@@ -636,20 +637,61 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ],
                 ),
-                GestureDetector(
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const NotificationsScreen(),
+                Consumer<NotificationProvider>(
+                  builder: (context, notifications, _) {
+                    return GestureDetector(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const NotificationsScreen(),
+                          ),
+                        );
+                      },
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          const CircleAvatar(
+                            backgroundColor: Colors.white24,
+                            radius: 20,
+                            child: Icon(
+                              Icons.notifications_none_rounded,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                          ),
+                          if (notifications.unreadCount > 0)
+                            Positioned(
+                              right: -4,
+                              top: -4,
+                              child: Container(
+                                constraints: const BoxConstraints(minWidth: 18),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.red.shade600,
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: Colors.white, width: 1.5),
+                                ),
+                                child: Text(
+                                  notifications.unreadCount > 99
+                                      ? '99+'
+                                      : notifications.unreadCount.toString(),
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     );
                   },
-                  child: const CircleAvatar(
-                    backgroundColor: Colors.white24,
-                    radius: 20,
-                    child: Icon(Icons.notifications_none_rounded, color: Colors.white, size: 20),
-                  ),
                 ),
               ],
             ),

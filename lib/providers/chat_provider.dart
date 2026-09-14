@@ -1,11 +1,11 @@
 import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:aadya_plus/services/api_client.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:aadya_plus/services/secure_storage_service.dart';
+
 import 'package:aadya_plus/models/chat_message.dart';
+import 'package:aadya_plus/services/api_client.dart' as http;
+import 'package:aadya_plus/services/secure_storage_service.dart';
+import 'package:aadya_plus/utils/constants.dart';
+import 'package:flutter/material.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 class ChatProvider with ChangeNotifier {
   List<ChatMessage> _messages = [];
@@ -14,17 +14,19 @@ class ChatProvider with ChangeNotifier {
   bool _isLoadingSessions = false;
   IO.Socket? _socket;
   String? _sessionId;
-  String? _currentPatientId;
+  String? _error;
 
   List<ChatMessage> get messages => _messages;
   List<dynamic> get sessions => _sessions;
   bool get isLoading => _isLoading;
   bool get isLoadingSessions => _isLoadingSessions;
+  String? get error => _error;
 
   Future<String?> _getToken() => SecureStorageService.instance.readToken();
 
   Future<void> loadSessions() async {
     _isLoadingSessions = true;
+    _error = null;
     notifyListeners();
 
     try {
@@ -32,146 +34,184 @@ class ChatProvider with ChangeNotifier {
       if (token == null) return;
 
       final res = await http.get(
-        Uri.parse('${AppConstants.baseUrl}/chat/patient/sessions'),
-        headers: {'Authorization': 'Bearer $token'},
+        http.apiUri('/chat/patient/sessions'),
       );
-
-      final data = json.decode(res.body);
-      if (data['success'] == true) {
-        _sessions = data['sessions'] ?? [];
+      final data = _decode(res.body);
+      if (res.statusCode >= 200 &&
+          res.statusCode < 300 &&
+          data['success'] == true) {
+        _sessions = data['sessions'] is List ? data['sessions'] : [];
+      } else {
+        throw Exception(data['error'] ?? data['message'] ?? 'Unable to load chats');
       }
     } catch (e) {
+      _error = _cleanError(e);
       debugPrint('Error loading chat sessions: $e');
+    } finally {
+      _isLoadingSessions = false;
+      notifyListeners();
     }
-
-    _isLoadingSessions = false;
-    notifyListeners();
   }
 
-  Future<void> loadChatMessages(String professionalId, {String? appointmentId}) async {
+  Future<void> loadChatMessages(
+    String professionalId, {
+    String professionalType = 'doctor',
+    String? appointmentId,
+  }) async {
     _isLoading = true;
     _messages = [];
-    Future.microtask(() => notifyListeners());
+    _error = null;
+    Future.microtask(notifyListeners);
 
     try {
       final token = await _getToken();
-      if (token == null) return;
+      if (token == null) throw Exception('Authentication required');
 
-      final prefs = await SharedPreferences.getInstance();
-      final userDataStr = prefs.getString(AppConstants.userKey);
-      if (userDataStr == null) return;
-      final userData = json.decode(userDataStr);
-      _currentPatientId = userData['profileId'] ?? userData['id'] ?? userData['_id'];
-
-      // 1. Create or Get Session
-      final url = Uri.parse('${AppConstants.chatUrl}/session');
+      // Backend B1 derives the patient identity from the authenticated JWT.
+      // The client supplies only the intended professional/relationship.
       final res = await http.post(
-        url,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
+        http.apiUri('/chat/session'),
+        headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'patientId': _currentPatientId,
           'professionalId': professionalId,
-          'professionalType': 'doctor', // Assuming doctor for now
-          if (appointmentId != null) 'appointmentId': appointmentId,
+          'professionalType': professionalType,
+          if (appointmentId != null && appointmentId.isNotEmpty)
+            'appointmentId': appointmentId,
         }),
       );
 
-      final data = json.decode(res.body);
-      if (data['success'] == true) {
-        _sessionId = data['session']['_id'];
-
-        // 2. Fetch history
-        final historyRes = await http.get(
-          Uri.parse('${AppConstants.chatUrl}/session/$_sessionId/messages'),
-          headers: {'Authorization': 'Bearer $token'},
+      final data = _decode(res.body);
+      if (res.statusCode < 200 ||
+          res.statusCode >= 300 ||
+          data['success'] != true) {
+        throw Exception(
+          data['error'] ?? data['message'] ?? 'Unable to open secure chat',
         );
-        
-        final historyData = json.decode(historyRes.body);
-        if (historyData['success'] == true) {
-          final msgs = List.from(historyData['messages']);
-          _messages = msgs.map((m) => ChatMessage(
-            id: m['_id'] ?? '',
-            senderId: m['senderId'] ?? '',
-            receiverId: '', // not strictly needed for UI here
-            message: m['content'] ?? '',
-            timestamp: m['createdAt'] != null ? DateTime.parse(m['createdAt']) : DateTime.now(),
-            isRead: m['isRead'] ?? false,
-            type: MessageType.text,
-          )).toList();
-        }
-
-        // 3. Connect Socket
-        _connectSocket(token, _sessionId!);
       }
-    } catch (e) {
-      print('Error loading chat: $e');
-    }
 
-    _isLoading = false;
-    notifyListeners();
+      final session = data['session'];
+      if (session is! Map || session['_id'] == null) {
+        throw Exception('Chat session response is invalid');
+      }
+      _sessionId = session['_id'].toString();
+
+      final historyRes = await http.get(
+        http.apiUri('/chat/session/$_sessionId/messages'),
+      );
+      final historyData = _decode(historyRes.body);
+      if (historyRes.statusCode < 200 ||
+          historyRes.statusCode >= 300 ||
+          historyData['success'] != true) {
+        throw Exception(
+          historyData['error'] ??
+              historyData['message'] ??
+              'Unable to load chat history',
+        );
+      }
+
+      final rows = historyData['messages'] is List
+          ? historyData['messages'] as List
+          : const [];
+      _messages = rows.whereType<Map>().map((raw) {
+        final message = Map<String, dynamic>.from(raw);
+        final senderRaw = message['senderId'];
+        final senderId = senderRaw is Map
+            ? (senderRaw['_id'] ?? '').toString()
+            : (senderRaw ?? '').toString();
+        return ChatMessage(
+          id: (message['_id'] ?? '').toString(),
+          senderId: senderId,
+          receiverId: '',
+          message: (message['content'] ?? '').toString(),
+          timestamp: DateTime.tryParse(
+                    (message['createdAt'] ?? '').toString(),
+                  )?.toLocal() ??
+              DateTime.now(),
+          isRead: message['isRead'] == true,
+          type: MessageType.text,
+        );
+      }).toList();
+
+      _connectSocket(token, _sessionId!);
+    } catch (e) {
+      _error = _cleanError(e);
+      debugPrint('Error loading chat: $e');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   void _connectSocket(String token, String sessionId) {
-    if (_socket != null) {
-      _socket!.disconnect();
-      _socket!.dispose();
-    }
+    disconnectSocket();
 
-    final socketUrl = AppConstants.socketBaseUrl;
-
-    _socket = IO.io(socketUrl, IO.OptionBuilder()
-        .setTransports(['websocket'])
-        .disableAutoConnect()
-        .setExtraHeaders({'Authorization': 'Bearer $token'})
-        .build());
+    _socket = IO.io(
+      AppConstants.socketBaseUrl,
+      IO.OptionBuilder()
+          .setTransports(['websocket'])
+          .disableAutoConnect()
+          .setAuth({'token': token})
+          .setExtraHeaders({'Authorization': 'Bearer $token'})
+          .enableReconnection()
+          .build(),
+    );
 
     _socket!.onConnect((_) {
-      print('Patient App: Socket connected!');
+      debugPrint('Patient App: authenticated socket connected');
       _socket!.emit('join_chat', {'sessionId': sessionId});
     });
 
-    _socket!.onDisconnect((_) => print('Patient App: Socket disconnected.'));
-    _socket!.onConnectError((err) => print('Patient App: Socket ConnectError: $err'));
-    _socket!.onError((err) => print('Patient App: Socket Error: $err'));
+    _socket!.onDisconnect((_) {
+      debugPrint('Patient App: socket disconnected');
+    });
+    _socket!.onConnectError((error) {
+      _error = 'Secure chat connection failed';
+      debugPrint('Patient App: socket connect error: $error');
+      notifyListeners();
+    });
+    _socket!.on('chat_error', (data) {
+      final message = data is Map ? data['error'] : data;
+      _error = (message ?? 'Chat request failed').toString();
+      debugPrint('Patient App: secure chat error: $_error');
+      notifyListeners();
+    });
 
     _socket!.on('receive_message', (data) {
-      debugPrint('Patient App: New message received: $data');
       try {
-        Map<String, dynamic> msgData;
-        if (data is String) {
-           msgData = Map<String, dynamic>.from(jsonDecode(data));
-        } else {
-           msgData = Map<String, dynamic>.from(data);
-        }
+        final msgData = data is String
+            ? Map<String, dynamic>.from(jsonDecode(data) as Map)
+            : Map<String, dynamic>.from(data as Map);
 
         final senderRaw = msgData['senderId'];
-        final senderId = senderRaw is Map ? (senderRaw['_id'] ?? '') : (senderRaw?.toString() ?? '');
+        final senderId = senderRaw is Map
+            ? (senderRaw['_id'] ?? '').toString()
+            : (senderRaw ?? '').toString();
 
-        // Deduplicate
-        final isDuplicate = _messages.any((m) => 
-          (m.id.isNotEmpty && m.id == msgData['_id']) ||
-          (m.message == msgData['content'] && m.senderId == senderId &&
-           DateTime.now().difference(m.timestamp).inSeconds < 2)
+        final id = (msgData['_id'] ?? '').toString();
+        final isDuplicate = _messages.any(
+          (message) => id.isNotEmpty && message.id == id,
         );
+        if (isDuplicate) return;
 
-        if (!isDuplicate) {
-          final msg = ChatMessage(
-            id: msgData['_id'] ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        _messages.add(
+          ChatMessage(
+            id: id.isEmpty
+                ? DateTime.now().microsecondsSinceEpoch.toString()
+                : id,
             senderId: senderId,
             receiverId: '',
-            message: msgData['content'] ?? '',
-            timestamp: msgData['createdAt'] != null ? DateTime.parse(msgData['createdAt']) : DateTime.now(),
-            isRead: false,
+            message: (msgData['content'] ?? '').toString(),
+            timestamp: DateTime.tryParse(
+                      (msgData['createdAt'] ?? '').toString(),
+                    )?.toLocal() ??
+                DateTime.now(),
+            isRead: msgData['isRead'] == true,
             type: MessageType.text,
-          );
-          _messages.add(msg);
-          notifyListeners();
-        }
+          ),
+        );
+        notifyListeners();
       } catch (e) {
-        debugPrint('Patient Chat socket parse error: $e');
+        debugPrint('Patient chat socket parse error: $e');
       }
     });
 
@@ -179,21 +219,26 @@ class ChatProvider with ChangeNotifier {
   }
 
   void sendMessage({
-    required String doctorId,
     required String message,
-    required MessageType type,
+    MessageType type = MessageType.text,
   }) {
-    if (_socket == null || _sessionId == null) return;
-    
-    final payload = {
-      'sessionId': _sessionId,
-      'senderId': _currentPatientId,
-      'senderType': 'patient',
-      'content': message,
-      'messageType': 'text',
-    };
+    final sessionId = _sessionId;
+    final socket = _socket;
+    final content = message.trim();
+    if (socket == null || sessionId == null || content.isEmpty) return;
 
-    _socket!.emit('send_message', payload);
+    // SECURITY: senderId/senderType are intentionally absent. Backend B1
+    // derives both values from the authenticated Socket.IO JWT handshake.
+    socket.emit('send_message', {
+      'sessionId': sessionId,
+      'content': content,
+      'messageType': type == MessageType.text ? 'text' : 'text',
+    });
+  }
+
+  void clearError() {
+    _error = null;
+    notifyListeners();
   }
 
   void disconnectSocket() {
@@ -201,5 +246,22 @@ class ChatProvider with ChangeNotifier {
     _socket?.dispose();
     _socket = null;
     _sessionId = null;
+  }
+
+  Map<String, dynamic> _decode(String body) {
+    if (body.trim().isEmpty) return <String, dynamic>{};
+    final decoded = json.decode(body);
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    return <String, dynamic>{};
+  }
+
+  String _cleanError(Object error) =>
+      error.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+
+  @override
+  void dispose() {
+    disconnectSocket();
+    super.dispose();
   }
 }

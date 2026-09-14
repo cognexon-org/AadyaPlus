@@ -96,6 +96,7 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
                           _filterChip('all', 'All'),
                           _filterChip('appointment', 'Appointments'),
                           _filterChip('labtest', 'Diagnostics'),
+                          _filterChip('pharmacy_order', 'Pharmacy'),
                         ],
                       ),
                       const SizedBox(height: 18),
@@ -126,8 +127,17 @@ class _PaymentsScreenState extends State<PaymentsScreen> {
 
   Widget _paymentCard(PaymentRecord payment) {
     final isAppointment = payment.type == 'appointment';
-    final color = isAppointment ? Colors.blue : Colors.teal;
-    final icon = isAppointment ? Icons.person_outline : Icons.science_outlined;
+    final isPharmacy = payment.type == 'pharmacy_order';
+    final color = isAppointment
+        ? Colors.blue
+        : isPharmacy
+            ? Colors.orange
+            : Colors.teal;
+    final icon = isAppointment
+        ? Icons.person_outline
+        : isPharmacy
+            ? Icons.local_pharmacy_outlined
+            : Icons.science_outlined;
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),

@@ -167,6 +167,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                               description: '',
                               languages: [],
                               availability: {},
+                              professionalType: (session['professionalType'] ?? 'doctor').toString(),
                             );
                             
                             Navigator.push(
