@@ -26,6 +26,10 @@ class PharmacyProvider with ChangeNotifier {
   List<Map<String, dynamic>> get uploads => _uploads;
   List<Map<String, dynamic>> get orders => _orders;
   bool get isLoading => _isLoading;
+
+  /// An Aadya prescription the patient chose to order from; checkout
+  /// selects it for them.
+  String? preferredPrescriptionId;
   String? get error => _error;
 
   int get cartCount => _asInt(_cartTotals['itemCount']);
@@ -45,7 +49,11 @@ class PharmacyProvider with ChangeNotifier {
     await _run(() async {
       _stores = await _api.listStores(pincode: pincode, query: query);
       if (_selectedStore == null && _stores.isNotEmpty) {
-        _selectedStore = _stores.first;
+        // Prefer a store that can deliver right now.
+        _selectedStore = _stores.firstWhere(
+          (st) => st['paused'] != true && st['serviceable'] != false,
+          orElse: () => _stores.first,
+        );
         await _loadCatalogInternal();
       } else if (_selectedStore != null) {
         final selectedId = _id(_selectedStore);
@@ -64,6 +72,15 @@ class PharmacyProvider with ChangeNotifier {
 
   Future<void> loadCatalog({String? query, String? category, String? rx}) async {
     await _run(() => _loadCatalogInternal(query: query, category: category, rx: rx));
+  }
+
+  /// The selected store's catalog for one search, without replacing the
+  /// shop's list — for prescription lookups.
+  Future<List<Map<String, dynamic>>> searchCatalog(String query) async {
+    final storeId = _id(_selectedStore);
+    if (storeId.isEmpty) return [];
+    final data = await _api.catalog(storeId: storeId, query: query, limit: 20);
+    return _list(data['products']);
   }
 
   Future<void> _loadCatalogInternal({String? query, String? category, String? rx}) async {
@@ -150,6 +167,20 @@ class PharmacyProvider with ChangeNotifier {
     final address = await _api.createAddress(payload);
     await loadCheckoutData();
     return address;
+  }
+
+  Future<void> deleteAddress(String id) async {
+    await _api.deleteAddress(id);
+    _addresses = _addresses.where((a) => _id(a) != id).toList();
+    notifyListeners();
+  }
+
+  Future<void> setDefaultAddress(String id) async {
+    await _api.setDefaultAddress(id);
+    _addresses = [
+      for (final a in _addresses) {...a, 'isDefault': _id(a) == id},
+    ];
+    notifyListeners();
   }
 
   Future<Map<String, dynamic>> uploadPrescription(String filePath) async {
@@ -248,4 +279,28 @@ class PharmacyProvider with ChangeNotifier {
   }
   static int _asInt(dynamic value) => value is num ? value.toInt() : int.tryParse('$value') ?? 0;
   static double _asDouble(dynamic value) => value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+
+  @visibleForTesting
+  void debugSeedShop({
+    Map<String, dynamic>? store,
+    List<Map<String, dynamic>> products = const [],
+    List<Map<String, dynamic>> cart = const [],
+  }) {
+    _selectedStore = store;
+    _products = products;
+    _cartItems = cart;
+    _cartTotals = {
+      'itemCount': cart.fold<int>(0, (s, l) => s + ((l['quantity'] as num?)?.toInt() ?? 0)),
+      'merchandiseTotal': cart.fold<double>(0, (s, l) => s + ((l['totalAmount'] as num?)?.toDouble() ?? 0)),
+    };
+    _isLoading = false;
+    _error = null;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void debugSeedOrders(List<Map<String, dynamic>> orders) {
+    _orders = orders;
+    notifyListeners();
+  }
 }

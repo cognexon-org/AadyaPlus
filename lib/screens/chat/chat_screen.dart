@@ -1,19 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
-import 'package:aadya_plus/providers/chat_provider.dart';
-import 'package:aadya_plus/providers/auth_provider.dart';
-import 'package:aadya_plus/models/chat_message.dart';
-import 'package:aadya_plus/models/doctor.dart';
-import 'package:intl/intl.dart';
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:aadya_plus/providers/appointment_provider.dart';
-import 'package:aadya_plus/screens/appointments/appointment_details_screen.dart';
-import 'package:aadya_plus/models/appointment.dart';
 
+import '../../core/ui/app_ui.dart';
+import '../../models/appointment.dart';
+import '../../models/chat_message.dart';
+import '../../models/doctor.dart';
+import '../../providers/appointment_provider.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/chat_provider.dart';
+import '../appointments/appointment_details_screen.dart';
+
+/// A secure conversation with a care professional, tied to the booking it
+/// came from.
 class ChatScreen extends StatefulWidget {
   final Doctor doctor;
   final String? appointmentId;
-
   const ChatScreen({super.key, required this.doctor, this.appointmentId});
 
   @override
@@ -21,406 +24,281 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  final TextEditingController _messageController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-  Appointment? _currentAppointment;
-  bool _isLoadingAppointment = false;
+  final _text = TextEditingController();
+  final _scroll = ScrollController();
+  late final ChatProvider _chat = context.read<ChatProvider>();
+  Appointment? _appointment;
+  int _seen = 0;
+
+  ModuleAccent get _accent => widget.doctor.professionalType == 'physio' ? ModuleAccent.physio : ModuleAccent.doctor;
 
   @override
   void initState() {
     super.initState();
-    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-    chatProvider.loadChatMessages(
-      widget.doctor.id,
-      professionalType: widget.doctor.professionalType,
-      appointmentId: widget.appointmentId,
-    );
-    
-    if (widget.appointmentId != null) {
-      _loadAppointmentContext();
+    _chat.loadChatMessages(widget.doctor.id, professionalType: widget.doctor.professionalType, appointmentId: widget.appointmentId);
+    _chat.addListener(_onMessages);
+    if (widget.appointmentId != null) _loadAppointment();
+  }
+
+  void _onMessages() {
+    if (_chat.messages.length != _seen) {
+      _seen = _chat.messages.length;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
     }
   }
 
-  Future<void> _loadAppointmentContext() async {
-    setState(() => _isLoadingAppointment = true);
-    final aptProvider = Provider.of<AppointmentProvider>(context, listen: false);
-    
-    // Try to find it immediately
-    try {
-      _currentAppointment = aptProvider.appointments.firstWhere((a) => a.id == widget.appointmentId);
-    } catch (_) {
-      // Not found locally? Load appointments from server
-      await aptProvider.loadAppointments();
-      try {
-        _currentAppointment = aptProvider.appointments.firstWhere((a) => a.id == widget.appointmentId);
-      } catch (_) {
-        // Still not found, might belong to past that isn't paginated, or just an edge case.
+  void _toBottom() {
+    if (!_scroll.hasClients) return;
+    _scroll.animateTo(_scroll.position.maxScrollExtent, duration: AppMotion.medium, curve: AppMotion.enter);
+  }
+
+  Future<void> _loadAppointment() async {
+    final provider = context.read<AppointmentProvider>();
+    Appointment? find() {
+      for (final a in provider.appointments) {
+        if (a.id == widget.appointmentId) return a;
       }
+      return null;
     }
-    
-    if (mounted) {
-      setState(() => _isLoadingAppointment = false);
+
+    var a = find();
+    if (a == null) {
+      await provider.loadAppointments();
+      a = find();
     }
+    if (mounted) setState(() => _appointment = a);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppConstants.backgroundColor,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        surfaceTintColor: Colors.white,
-        leadingWidth: 40,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new, size: 18, color: AppConstants.textColor),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Row(
-          children: [
-            Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.grey[200]!, width: 2),
-              ),
-              child: CircleAvatar(
-                backgroundImage: NetworkImage(widget.doctor.imageUrl),
-                radius: 18,
-                backgroundColor: AppConstants.primaryColor.withOpacity(0.1),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.doctor.name,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppConstants.textColor),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text(
-                    'Online',
-                    style: TextStyle(fontSize: 11, color: Colors.green[600], fontWeight: FontWeight.w500),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          if (widget.appointmentId != null)
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert, color: AppConstants.textColor),
-              onSelected: (value) {
-                if (value == 'appointment_details') {
-                  if (_currentAppointment != null) {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => AppointmentDetailsScreen(appointment: _currentAppointment!),
-                      ),
-                    );
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Could not load appointment details. Please check My Appointments tab.')),
-                    );
-                  }
-                }
-              },
-              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                PopupMenuItem<String>(
-                  value: 'appointment_details',
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Appointment Details', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                      Text('ID: ${widget.appointmentId}', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Consumer<ChatProvider>(
-              builder: (context, chatProvider, child) {
-                if (chatProvider.isLoading) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                return ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                  reverse: false,
-                  itemCount: chatProvider.messages.length + 1, // +1 for the context card
-                  itemBuilder: (context, index) {
-                    if (index == 0) {
-                      return _buildAppointmentContextCard();
-                    }
-                    
-                    final message = chatProvider.messages[index - 1];
-                    final authUser = Provider.of<AuthProvider>(context, listen: false).user;
-                    final myId = authUser?.profileId ?? authUser?.id;
-                    final isUser = message.senderId == myId;
-                    
-                    return _buildMessageBubble(message, isUser);
-                  },
-                );
-              },
-            ),
-          ),
-          _buildMessageInput(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAppointmentContextCard() {
-    if (widget.appointmentId == null) return const SizedBox.shrink();
-    if (_isLoadingAppointment) {
-      return const Padding(
-        padding: EdgeInsets.only(bottom: 24.0),
-        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-      );
-    }
-    if (_currentAppointment == null) return const SizedBox.shrink();
-
-    final apt = _currentAppointment!;
-    final dateStr = DateFormat('EEEE, MMM d, yyyy').format(apt.dateTime.toLocal());
-    final timeStr = DateFormat('hh:mm a').format(apt.dateTime.toLocal());
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 24, left: 16, right: 16, top: 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppConstants.primaryColor.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppConstants.primaryColor.withOpacity(0.2)),
-      ),
-      child: Column(
-        children: [
-          Icon(Icons.calendar_month, color: AppConstants.primaryColor.withOpacity(0.8), size: 28),
-          const SizedBox(height: 8),
-          Text('Consultation Chat', style: TextStyle(fontWeight: FontWeight.bold, color: AppConstants.primaryColor.withOpacity(0.9), fontSize: 14)),
-          const SizedBox(height: 6),
-          Text('$dateStr • $timeStr', style: TextStyle(color: Colors.grey.shade700, fontSize: 13, fontWeight: FontWeight.w500)),
-          if (apt.appointmentType.isNotEmpty) ...[
-            const SizedBox(height: 4),
-            Text('Type: ${apt.appointmentType.toUpperCase()}', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
-          ]
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMessageBubble(ChatMessage message, bool isUser) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (!isUser) ...[
-                CircleAvatar(
-                  backgroundImage: NetworkImage(widget.doctor.imageUrl),
-                  radius: 14,
-                  backgroundColor: Colors.grey[200],
-                ),
-                const SizedBox(width: 8),
-              ],
-              Flexible(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: isUser ? AppConstants.primaryColor : Colors.white,
-                    borderRadius: BorderRadius.only(
-                      topLeft: const Radius.circular(20),
-                      topRight: const Radius.circular(20),
-                      bottomLeft: Radius.circular(isUser ? 20 : 4),
-                      bottomRight: Radius.circular(isUser ? 4 : 20),
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.03),
-                        blurRadius: 5,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                    border: isUser ? null : Border.all(color: Colors.grey[100]!),
-                  ),
-                  child: Text(
-                    message.message,
-                    style: TextStyle(
-                      color: isUser ? Colors.white : AppConstants.textColor,
-                      fontSize: 14,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ),
-              if (isUser) const SizedBox(width: 28), // Space for timing below or alignment
-            ],
-          ),
-          Padding(
-            padding: EdgeInsets.only(
-              top: 4,
-              left: isUser ? 0 : 40,
-              right: isUser ? 8 : 0,
-            ),
-            child: Text(
-              DateFormat('hh:mm a').format(message.timestamp.toLocal()),
-              style: TextStyle(
-                fontSize: 10,
-                color: Colors.grey[500],
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMessageInput() {
-    return Container(
-      padding: EdgeInsets.only(
-        left: 16,
-        right: 16,
-        top: 12,
-        bottom: MediaQuery.of(context).padding.bottom + 12,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(24),
-          topRight: Radius.circular(24),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 15,
-            offset: const Offset(0, -5),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              color: AppConstants.primaryColor.withOpacity(0.1),
-              shape: BoxShape.circle,
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.add, color: AppConstants.primaryColor),
-              onPressed: _showAttachmentOptions,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: TextField(
-              controller: _messageController,
-              onSubmitted: (_) => _sendMessage(),
-              decoration: InputDecoration(
-                hintText: 'Type a message...',
-                hintStyle: TextStyle(color: Colors.grey[400], fontSize: 14),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
-                  borderSide: BorderSide.none,
-                ),
-                filled: true,
-                fillColor: Colors.grey[100],
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 10,
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          GestureDetector(
-            onTap: _sendMessage,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: const BoxDecoration(
-                color: AppConstants.primaryColor,
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.send_rounded, color: Colors.white, size: 20),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showAttachmentOptions() {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) {
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.image),
-              title: const Text('Image'),
-              onTap: () {
-                Navigator.pop(context);
-                // Implement image attachment
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.description),
-              title: const Text('Document'),
-              onTap: () {
-                Navigator.pop(context);
-                // Implement document attachment
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.medical_information),
-              title: const Text('Prescription'),
-              onTap: () {
-                Navigator.pop(context);
-                // Implement prescription attachment
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _sendMessage() {
-    if (_messageController.text.trim().isEmpty) return;
-
-    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-    chatProvider.sendMessage(
-      message: _messageController.text.trim(),
-      type: MessageType.text,
-    );
-
-    _messageController.clear();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
-    });
+  void _send() {
+    final text = _text.text.trim();
+    if (text.isEmpty) return;
+    _chat.sendMessage(message: text, type: MessageType.text);
+    _text.clear();
   }
 
   @override
   void dispose() {
-    Provider.of<ChatProvider>(context, listen: false).disconnectSocket();
-    _messageController.dispose();
-    _scrollController.dispose();
+    _chat.removeListener(_onMessages);
+    _chat.disconnectSocket();
+    _text.dispose();
+    _scroll.dispose();
     super.dispose();
   }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.watch<ChatProvider>();
+    final user = context.read<AuthProvider>().user;
+    final me = user?.profileId ?? user?.id;
+    final d = widget.doctor;
+    return ModuleTheme(
+      accent: _accent,
+      child: Scaffold(
+        backgroundColor: AppColors.bgSecondary,
+        appBar: AppBar(
+          titleSpacing: 0,
+          leading: IconButton(tooltip: 'Back', icon: const Icon(LucideIcons.arrowLeft, size: 22), onPressed: () => Navigator.of(context).maybePop()),
+          title: Row(
+            children: [
+              AppAvatar(name: d.name, imageUrl: d.imageUrl, size: 38, color: _accent.color),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(d.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+                    if (d.specialty.isNotEmpty)
+                      Text(d.specialty, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            if (_appointment != null)
+              IconButton(
+                tooltip: 'Appointment',
+                icon: const Icon(LucideIcons.calendarDays, size: 21),
+                onPressed: () => Navigator.of(context).push(AppPageRoute(builder: (_) => AppointmentDetailsScreen(appointment: _appointment!))),
+              ),
+            const SizedBox(width: 6),
+          ],
+        ),
+        body: Column(
+          children: [
+            Expanded(
+              child: p.isLoading
+                  ? const AppLoading()
+                  : p.error != null && p.messages.isEmpty
+                  ? Center(
+                      child: AppEmptyState(
+                        illustration: Illustrations.offline,
+                        title: 'Couldn’t open this chat',
+                        message: p.error,
+                        actionLabel: 'Try again',
+                        onAction: () => _chat.loadChatMessages(d.id, professionalType: d.professionalType, appointmentId: widget.appointmentId),
+                      ),
+                    )
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                      itemCount: p.messages.length + 1,
+                      itemBuilder: (_, i) {
+                        if (i == 0) return _context();
+                        final m = p.messages[i - 1];
+                        final prev = i > 1 ? p.messages[i - 2] : null;
+                        final newDay = prev == null || !_sameDay(prev.timestamp, m.timestamp);
+                        return Column(
+                          children: [
+                            if (newDay) _DayChip(date: m.timestamp),
+                            _Bubble(message: m, mine: m.senderId == me, accent: _accent),
+                          ],
+                        );
+                      },
+                    ),
+            ),
+            SafeArea(
+              top: false,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: AppColors.border))),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _text,
+                        minLines: 1,
+                        maxLines: 4,
+                        textCapitalization: TextCapitalization.sentences,
+                        cursorColor: _accent.color,
+                        style: AppType.sans(fontSize: AppType.body + 1, color: AppColors.textStrong),
+                        decoration: InputDecoration(
+                          hintText: 'Message',
+                          filled: true,
+                          fillColor: AppColors.panel,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ListenableBuilder(
+                      listenable: _text,
+                      builder: (_, _) => AppPressable(
+                        onTap: _text.text.trim().isEmpty ? null : _send,
+                        semanticLabel: 'Send',
+                        child: AnimatedContainer(
+                          duration: AppMotion.fast,
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: _text.text.trim().isEmpty ? AppColors.panel : _accent.color,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(LucideIcons.sendHorizontal, size: 19, color: _text.text.trim().isEmpty ? AppColors.textTertiary : Colors.white),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static bool _sameDay(DateTime a, DateTime b) {
+    final x = a.toLocal(), y = b.toLocal();
+    return x.year == y.year && x.month == y.month && x.day == y.day;
+  }
+
+  Widget _context() {
+    final a = _appointment;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(LucideIcons.lock, size: 13, color: AppColors.textSecondary),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    a == null
+                        ? 'Messages are private to you and your care team'
+                        : 'About your ${a.isVideo ? 'video call' : 'visit'} on ${DateFormat('d MMM, h:mm a').format(a.dateTime)}',
+                    style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DayChip extends StatelessWidget {
+  final DateTime date;
+  const _DayChip({required this.date});
+
+  @override
+  Widget build(BuildContext context) {
+    final d = date.toLocal();
+    final now = DateTime.now();
+    final label = d.year == now.year && d.month == now.month && d.day == now.day ? 'Today' : DateFormat('d MMMM').format(d);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Text(label, style: AppType.sans(fontSize: AppType.caption, fontWeight: FontWeight.w600, color: AppColors.textTertiary)),
+    );
+  }
+}
+
+class _Bubble extends StatelessWidget {
+  final ChatMessage message;
+  final bool mine;
+  final ModuleAccent accent;
+  const _Bubble({required this.message, required this.mine, required this.accent});
+
+  @override
+  Widget build(BuildContext context) => Align(
+    alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+    child: ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.fromLTRB(14, 10, 12, 8),
+        decoration: BoxDecoration(
+          color: mine ? accent.color : Colors.white,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(18),
+            topRight: const Radius.circular(18),
+            bottomLeft: Radius.circular(mine ? 18 : 5),
+            bottomRight: Radius.circular(mine ? 5 : 18),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              message.message,
+              style: AppType.sans(fontSize: AppType.body + 1, height: 1.4, color: mine ? Colors.white : AppColors.textStrong),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              DateFormat('h:mm a').format(message.timestamp.toLocal()),
+              style: AppType.sans(fontSize: AppType.micro, color: mine ? Colors.white70 : AppColors.textTertiary),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

@@ -1,7 +1,11 @@
+import 'package:aadya_plus/models/payment_record.dart';
 import 'package:aadya_plus/providers/auth_provider.dart';
 import 'package:aadya_plus/services/payment_service.dart';
 import 'package:aadya_plus/utils/constants.dart';
+import 'package:aadya_plus/core/ui/app_ui.dart';
+import 'package:aadya_plus/features/onboarding/onboarding_widgets.dart' show AuthNote;
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 
@@ -44,13 +48,6 @@ class _PaymentCheckoutScreenState extends State<PaymentCheckoutScreen> {
   }
 
   Future<void> _startPayment() async {
-    if (AppConstants.razorpayKeyId.isEmpty) {
-      setState(() {
-        _error = 'AADYA_RAZORPAY_KEY_ID is not configured for this build.';
-      });
-      return;
-    }
-
     setState(() {
       _busy = true;
       _error = null;
@@ -62,11 +59,19 @@ class _PaymentCheckoutScreenState extends State<PaymentCheckoutScreen> {
         entityId: widget.entityId,
       );
       _pendingOrder = order;
+      // The server sends its publishable key; a build-time key is the
+      // fallback for an older backend.
+      final keyId = order.keyId.isNotEmpty
+          ? order.keyId
+          : AppConstants.razorpayKeyId;
+      if (keyId.isEmpty) {
+        throw Exception('Online payment isn’t available right now.');
+      }
 
       if (!mounted) return;
       final user = context.read<AuthProvider>().user;
       final options = <String, dynamic>{
-        'key': AppConstants.razorpayKeyId,
+        'key': keyId,
         'amount': order.amountPaise,
         'currency': order.currency,
         'name': 'Aadya Plus',
@@ -118,17 +123,14 @@ class _PaymentCheckoutScreenState extends State<PaymentCheckoutScreen> {
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Payment verified successfully.'),
-          backgroundColor: Colors.green,
-        ),
+        const SnackBar(content: Text('Payment received')),
       );
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = 'Payment verification failed: ${e.toString()}';
+        _error = 'We couldn’t confirm the payment yet. If money was taken it will be matched automatically or refunded.';
       });
     }
   }
@@ -137,7 +139,7 @@ class _PaymentCheckoutScreenState extends State<PaymentCheckoutScreen> {
     if (!mounted) return;
     setState(() {
       _busy = false;
-      _error = response.message ?? 'Payment was cancelled or failed.';
+      _error = response.code == Razorpay.PAYMENT_CANCELLED ? 'Payment cancelled' : (response.message ?? 'The payment didn’t go through');
     });
   }
 
@@ -150,92 +152,77 @@ class _PaymentCheckoutScreenState extends State<PaymentCheckoutScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: const Text('Secure Payment'),
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final accent = switch (widget.entityType) {
+      'labtest' => ModuleAccent.lab,
+      'pharmacy_order' => ModuleAccent.pharmacy,
+      _ => ModuleAccent.brand,
+    };
+    return ModuleTheme(
+      accent: accent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: const AppTopBar(title: 'Payment'),
+        body: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: Colors.grey.shade200),
-              ),
+            const AppEntrance(child: AppIllustration(Illustrations.payments, height: 140, float: true)),
+            const SizedBox(height: 22),
+            AppEntrance(
+              index: 1,
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Pay for', style: TextStyle(color: Colors.grey)),
-                  const SizedBox(height: 6),
-                  Text(widget.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Amount', style: TextStyle(fontWeight: FontWeight.w600)),
-                      Text(
-                        '₹${widget.expectedAmount.toStringAsFixed(2)}',
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.w900,
-                          color: AppConstants.primaryColor,
+                  Text(widget.title, textAlign: TextAlign.center, style: AppType.sans(fontSize: AppType.body + 0.5, color: AppColors.textSecondary)),
+                  const SizedBox(height: 4),
+                  Text(
+                    appRupees(widget.expectedAmount),
+                    style: AppType.sans(fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -0.8, color: AppColors.textStrong),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            AppEntrance(
+              index: 2,
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(color: AppColors.panel, borderRadius: BorderRadius.circular(16)),
+                child: Column(
+                  children: [
+                    for (final (icon, text) in const [
+                      (LucideIcons.smartphone, 'UPI, cards, netbanking and wallets'),
+                      (LucideIcons.shieldCheck, 'Secured by Razorpay — we never see your card details'),
+                      (LucideIcons.rotateCcw, 'If a booking is cancelled, the refund goes back to how you paid'),
+                    ])
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 5),
+                        child: Row(
+                          children: [
+                            Icon(icon, size: 17, color: accent.color),
+                            const SizedBox(width: 10),
+                            Expanded(child: Text(text, style: AppType.sans(fontSize: AppType.small, height: 1.35, color: AppColors.textPrimary))),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.verified_user_outlined, color: AppConstants.primaryColor),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'The final payable amount is generated by the AadyaMed server. The app does not send a client-calculated amount to the payment gateway.',
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 16),
-              Text(_error!, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w600)),
-            ],
-            const Spacer(),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _busy ? null : _startPayment,
-                icon: _busy
-                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.lock_outline),
-                label: Text(_busy ? 'Preparing payment...' : 'Pay securely'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppConstants.primaryColor,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ],
                 ),
               ),
             ),
+            if (_error != null) ...[
+              const SizedBox(height: 14),
+              AuthNote.error(_error!.replaceFirst(RegExp(r'^\w*Exception:\s*'), ''), onClose: () => setState(() => _error = null)),
+            ],
           ],
+        ),
+        bottomNavigationBar: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            child: AppButton(
+              label: _busy ? 'Getting things ready…' : 'Pay ${appRupees(widget.expectedAmount)}',
+              icon: LucideIcons.lock,
+              loading: _busy,
+              onPressed: _startPayment,
+            ),
+          ),
         ),
       ),
     );

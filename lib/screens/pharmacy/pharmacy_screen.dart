@@ -1,92 +1,277 @@
-import 'package:aadya_plus/providers/pharmacy_provider.dart';
-import 'package:aadya_plus/screens/pharmacy/nearby_pharmacy_screen.dart';
-import 'package:aadya_plus/screens/pharmacy/pharmacy_cart_screen.dart';
-import 'package:aadya_plus/screens/pharmacy/pharmacy_orders_screen.dart';
-import 'package:aadya_plus/screens/pharmacy/pharmacy_shop_screen.dart';
-import 'package:aadya_plus/utils/constants.dart';
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/ui/app_ui.dart';
+import '../../providers/pharmacy_provider.dart';
+import '../prescriptions/prescriptions_screen.dart';
+import 'nearby_pharmacy_screen.dart';
+import 'pharmacy_cart_screen.dart';
+import 'pharmacy_order_details_screen.dart';
+import 'pharmacy_orders_screen.dart';
+import 'pharmacy_shop_screen.dart';
+import 'pharmacy_widgets.dart';
+
+/// The Medicines tab: which pharmacy delivers to you, search, shop by
+/// form, order from a prescription, and orders on their way.
 class PharmacyScreen extends StatelessWidget {
   const PharmacyScreen({super.key});
+
+  static const _done = ['delivered', 'cancelled', 'returned'];
 
   @override
   Widget build(BuildContext context) {
     final p = context.watch<PharmacyProvider>();
     final store = p.selectedStore;
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        backgroundColor: AppConstants.primaryColor,
-        foregroundColor: Colors.white,
-        title: const Text('Aadya Pharmacy', style: TextStyle(fontWeight: FontWeight.w900)),
+    final active = p.orders.where((o) => !_done.contains(o['orderStatus'])).toList();
+    void push(Widget w) => Navigator.of(context).push(AppPageRoute(builder: (_) => w));
+    void shop({String? query, String? category, bool focus = false}) => push(
+      store == null
+          ? const NearbyPharmacyScreen()
+          : PharmacyShopScreen(initialQuery: query, initialCategory: category, autofocus: focus),
+    );
+    return ModuleTheme(
+      accent: pharmacyAccent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: AppTopBar(
+          title: 'Medicines',
+          showBack: Navigator.of(context).canPop(),
+          actions: [_CartButton(count: p.cartCount, onTap: () => push(const PharmacyCartScreen()))],
+        ),
+        body: RefreshIndicator(
+          color: pharmacyAccent.color,
+          onRefresh: p.bootstrap,
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 28),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+                child: AppEntrance(child: _StoreCard(store: store, loading: p.isLoading && store == null, onChange: () => push(const NearbyPharmacyScreen()))),
+              ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: AppEntrance(
+                  index: 1,
+                  child: AppPressable(
+                    onTap: () => shop(focus: true),
+                    scale: 0.99,
+                    child: Container(
+                      height: 50,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(color: AppColors.panel, borderRadius: BorderRadius.circular(15)),
+                      child: Row(
+                        children: [
+                          const Icon(LucideIcons.search, size: 19, color: AppColors.textSecondary),
+                          const SizedBox(width: 10),
+                          Text('Search medicines', style: AppType.sans(fontSize: AppType.body + 0.5, color: AppColors.textTertiary)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: AppEntrance(
+                  index: 2,
+                  child: AppPressable(
+                    onTap: () => push(const PrescriptionsScreen()),
+                    scale: 0.985,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+                      decoration: BoxDecoration(
+                        color: pharmacyAccent.veryLight,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: pharmacyAccent.light),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Order from a prescription',
+                                  style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: AppColors.textStrong),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Pick one your doctor issued on Aadya Plus, or upload a photo at checkout.',
+                                  style: AppType.sans(fontSize: AppType.small, height: 1.4, color: AppColors.textSecondary),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const AppIllustration(Illustrations.prescription, height: 72),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              if (active.isNotEmpty) ...[
+                const SizedBox(height: 26),
+                AppSectionHeader(title: 'On the way', action: 'All orders', onAction: () => push(const PharmacyOrdersScreen())),
+                for (final o in active.take(3))
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+                    child: OrderCard(order: o, onTap: () => push(PharmacyOrderDetailsScreen(orderId: idOf(o)))),
+                  ),
+              ],
+              const SizedBox(height: 26),
+              const AppSectionHeader(title: 'Shop by form'),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    const gap = 10.0;
+                    final w = (box.maxWidth - gap * 3) / 4;
+                    return Wrap(
+                      spacing: gap,
+                      runSpacing: gap,
+                      children: [
+                        for (final e in kMedicineCategories.entries.where((e) => e.key != 'other'))
+                          SizedBox(
+                            width: w,
+                            child: AppPressable(
+                              onTap: () => shop(category: e.key),
+                              semanticLabel: e.value,
+                              child: Column(
+                                children: [
+                                  Container(
+                                    width: w,
+                                    height: w * 0.78,
+                                    decoration: BoxDecoration(color: AppColors.panel, borderRadius: BorderRadius.circular(16)),
+                                    child: Icon(medicineCategoryIcon(e.key), size: 24, color: pharmacyAccent.color),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(e.value, style: AppType.sans(fontSize: AppType.caption, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 20),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: AppCard(
+                  onTap: () => push(const PharmacyOrdersScreen()),
+                  child: Row(
+                    children: [
+                      Icon(LucideIcons.receipt, size: 20, color: pharmacyAccent.color),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Order history',
+                          style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w700, color: AppColors.textStrong),
+                        ),
+                      ),
+                      Text('${p.orders.length}', style: AppType.sans(fontSize: AppType.body, color: AppColors.textSecondary)),
+                      const SizedBox(width: 4),
+                      const Icon(LucideIcons.chevronRight, size: 18, color: AppColors.textTertiary),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        bottomNavigationBar: const CartBar(),
       ),
-      body: RefreshIndicator(
-        onRefresh: () async { await p.loadStores(); await p.loadCart(); await p.loadOrders(); },
-        child: ListView(
-          padding: const EdgeInsets.all(16),
+    );
+  }
+}
+
+class _CartButton extends StatelessWidget {
+  final int count;
+  final VoidCallback onTap;
+  const _CartButton({required this.count, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+    tooltip: count > 0 ? 'Cart, $count items' : 'Cart',
+    onPressed: onTap,
+    icon: Badge(
+      isLabelVisible: count > 0,
+      backgroundColor: pharmacyAccent.color,
+      label: Text('$count'),
+      child: const Icon(LucideIcons.shoppingBag, size: 22),
+    ),
+  );
+}
+
+class _StoreCard extends StatelessWidget {
+  final Map<String, dynamic>? store;
+  final bool loading;
+  final VoidCallback onChange;
+  const _StoreCard({required this.store, required this.loading, required this.onChange});
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) return const AppShimmer(child: AppSkeletonBlock(width: double.infinity, height: 72, radius: 18));
+    final s = store;
+    final eco = mapOf(s?['ecommerce']);
+    final eta = (eco['estimatedDeliveryMinutes'] as num?)?.toInt();
+    final fee = asDouble(eco['deliveryFee']);
+    final free = asDouble(eco['freeDeliveryThreshold']);
+    final paused = s?['paused'] == true;
+    final line = s == null
+        ? 'Choose a pharmacy that delivers to you'
+        : paused
+        ? 'Not taking orders right now'
+        : [
+            if (eta != null) eta >= 60 ? 'Delivery in ~${(eta / 60).round()} hr' : 'Delivery in ~$eta min',
+            if (fee <= 0) 'Free delivery' else if (free > 0) 'Free over ${appRupees(free)}' else '${appRupees(fee)} delivery',
+          ].join(' · ');
+    return AppPressable(
+      onTap: onChange,
+      scale: 0.99,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.borderStrong)),
+        child: Row(
           children: [
             Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(color: AppConstants.primaryColor, borderRadius: BorderRadius.circular(20)),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Medicines from a real pharmacy branch', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w900)),
-                const SizedBox(height: 8),
-                Text(store == null ? 'Choose a serviceable pharmacy to see live stock and prices.' : 'Selected: ${store['name'] ?? 'Pharmacy'}', style: TextStyle(color: Colors.white.withOpacity(.9))),
-                const SizedBox(height: 14),
-                OutlinedButton.icon(
-                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NearbyPharmacyScreen())),
-                  style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white)),
-                  icon: const Icon(Icons.storefront_outlined),
-                  label: Text(store == null ? 'Choose pharmacy' : 'Change pharmacy'),
-                ),
-              ]),
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(color: pharmacyAccent.veryLight, borderRadius: BorderRadius.circular(14)),
+              child: Icon(LucideIcons.store, size: 21, color: pharmacyAccent.color),
             ),
-            const SizedBox(height: 16),
-            Row(children: [
-              Expanded(child: _ActionCard(icon: Icons.medication_outlined, title: 'Shop', subtitle: 'Live catalog', onTap: store == null ? () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NearbyPharmacyScreen())) : () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PharmacyShopScreen())))),
-              const SizedBox(width: 10),
-              Expanded(child: _ActionCard(icon: Icons.shopping_cart_outlined, title: 'Cart', subtitle: '${p.cartCount} items', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PharmacyCartScreen())))),
-            ]),
-            const SizedBox(height: 10),
-            _ActionCard(icon: Icons.local_shipping_outlined, title: 'My medicine orders', subtitle: 'Track payment, prescription review, packing and delivery', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PharmacyOrdersScreen()))),
-            if (p.orders.isNotEmpty) ...[
-              const SizedBox(height: 20),
-              const Text('Recent orders', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
-              const SizedBox(height: 8),
-              ...p.orders.take(3).map((o) => Card(child: ListTile(
-                leading: const Icon(Icons.receipt_long_outlined, color: AppConstants.primaryColor),
-                title: Text((o['orderNumber'] ?? 'Order').toString()),
-                subtitle: Text((o['orderStatus'] ?? '').toString().replaceAll('_', ' ')),
-                trailing: Text('₹${_double(o['totalAmount']).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w800)),
-                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PharmacyOrdersScreen())),
-              ))),
-            ],
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    s == null ? 'No pharmacy selected' : 'Delivering from',
+                    style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary),
+                  ),
+                  Text(
+                    (s?['name'] ?? 'Choose a pharmacy').toString(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppType.sans(fontSize: AppType.body + 1, fontWeight: FontWeight.w800, color: AppColors.textStrong),
+                  ),
+                  Text(
+                    line,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppType.sans(fontSize: AppType.caption, fontWeight: FontWeight.w600, color: paused ? AppColors.warning : pharmacyAccent.color),
+                  ),
+                ],
+              ),
+            ),
+            Text('Change', style: AppType.sans(fontSize: AppType.small, fontWeight: FontWeight.w700, color: pharmacyAccent.color)),
           ],
         ),
       ),
     );
   }
-
-  static double _double(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
-}
-
-class _ActionCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-  const _ActionCard({required this.icon, required this.title, required this.subtitle, required this.onTap});
-  @override
-  Widget build(BuildContext context) => Card(
-    child: InkWell(
-      borderRadius: BorderRadius.circular(12), onTap: onTap,
-      child: Padding(padding: const EdgeInsets.all(16), child: Row(children: [
-        CircleAvatar(backgroundColor: AppConstants.primaryColor.withOpacity(.1), child: Icon(icon, color: AppConstants.primaryColor)),
-        const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontWeight: FontWeight.w900)), Text(subtitle, style: TextStyle(fontSize: 12, color: Colors.grey.shade600))])),
-        const Icon(Icons.chevron_right),
-      ])),
-    ),
-  );
 }

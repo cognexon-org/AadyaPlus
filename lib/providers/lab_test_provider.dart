@@ -30,6 +30,83 @@ class LabTestProvider with ChangeNotifier {
 
   Future<List<Map<String, dynamic>>> slots(String labId, DateTime date) => _api.slots(labId, date);
 
+  // ── Test cart ──
+  // A lab order holds tests and packages from one lab, so the cart does too.
+
+  final List<Map<String, dynamic>> _cart = [];
+  List<Map<String, dynamic>> get cart => List.unmodifiable(_cart);
+  String? get cartLabId => _cart.isEmpty ? null : (_cart.first['labId'] ?? '').toString();
+  Map<String, dynamic>? get cartLab => _cart.isEmpty ? null : _cart.first;
+
+  static String itemKey(Map<String, dynamic> row) {
+    final item = Map<String, dynamic>.from(row['item'] ?? const {});
+    final code = row['kind'] == 'package' ? item['packageCode'] : item['testCode'];
+    return '${row['labId']}|${row['kind']}|$code';
+  }
+
+  bool inCart(Map<String, dynamic> row) => _cart.any((r) => itemKey(r) == itemKey(row));
+
+  double get cartSubtotal => _cart.fold(0.0, (s, r) {
+    final price = (r['item'] is Map ? r['item']['price'] : null);
+    return s + (price is num ? price.toDouble() : double.tryParse('$price') ?? 0);
+  });
+
+  /// Adds [row]; false (and nothing changes) when it's from another lab.
+  bool addToCart(Map<String, dynamic> row) {
+    if (inCart(row)) return true;
+    if (cartLabId != null && cartLabId != (row['labId'] ?? '').toString()) return false;
+    _cart.add(row);
+    notifyListeners();
+    return true;
+  }
+
+  void replaceCart(Map<String, dynamic> row) {
+    _cart
+      ..clear()
+      ..add(row);
+    notifyListeners();
+  }
+
+  void removeFromCart(Map<String, dynamic> row) {
+    _cart.removeWhere((r) => itemKey(r) == itemKey(row));
+    notifyListeners();
+  }
+
+  void clearCart() {
+    _cart.clear();
+    notifyListeners();
+  }
+
+  /// Books everything in the cart as one order at one lab.
+  Future<Map<String, dynamic>> bookCart({
+    required DateTime date,
+    required String startTime,
+    required String endTime,
+    required String type,
+    Map<String, dynamic>? collectionAddress,
+    String? patientInstructions,
+  }) async {
+    String code(Map<String, dynamic> r) {
+      final item = Map<String, dynamic>.from(r['item'] ?? const {});
+      return ((r['kind'] == 'package' ? item['packageCode'] : item['testCode']) ?? '').toString();
+    }
+
+    final order = await _api.createOrder(
+      labId: cartLabId ?? '',
+      testCodes: _cart.where((r) => r['kind'] != 'package').map(code).where((c) => c.isNotEmpty).toList(),
+      packageCodes: _cart.where((r) => r['kind'] == 'package').map(code).where((c) => c.isNotEmpty).toList(),
+      date: date,
+      startTime: startTime,
+      endTime: endTime,
+      type: type,
+      collectionAddress: collectionAddress,
+      patientInstructions: patientInstructions,
+    );
+    _cart.clear();
+    await loadOrders();
+    return order;
+  }
+
   Future<Map<String, dynamic>> book({
     required Map<String, dynamic> catalogItem,
     required DateTime date,
@@ -98,5 +175,22 @@ class LabTestProvider with ChangeNotifier {
       _isLoading = false;
       notifyListeners();
     }
+  }
+
+  @visibleForTesting
+  void debugSeedCatalog(List<Map<String, dynamic>> rows, {int inCart = 0}) {
+    _catalog = rows;
+    _cart
+      ..clear()
+      ..addAll(rows.take(inCart));
+    _isLoading = false;
+    _error = null;
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void debugSeedOrders(List<Map<String, dynamic>> orders) {
+    _orders = orders;
+    notifyListeners();
   }
 }

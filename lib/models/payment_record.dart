@@ -52,6 +52,10 @@ class PaymentOrderData {
   final String entityType;
   final String entityId;
 
+  /// Razorpay key id sent by the server (publishable); may be empty on an
+  /// older backend, in which case the build-time key is used.
+  final String keyId;
+
   const PaymentOrderData({
     required this.orderId,
     required this.amountPaise,
@@ -59,5 +63,6 @@ class PaymentOrderData {
     required this.payableAmount,
     required this.entityType,
     required this.entityId,
+    this.keyId = '',
   });
 }

@@ -1,5 +1,4 @@
 import 'dart:ui';
-import 'package:flutter/foundation.dart';
 
 class AppConstants {
   static const String appName = 'Aadya Plus';
@@ -34,16 +33,14 @@ class AppConstants {
     defaultValue: '',
   );
 
+  /// The production backend, used when no AADYA_API_BASE_URL is passed.
+  /// Release builds used to throw without the dart-define, which broke every
+  /// request in a store build (the pro app shipped with the same bug).
+  static const String defaultApiBaseUrl = 'http://16.176.130.55/api';
+
   static String get baseUrl {
     final configured = _stripTrailingSlash(_configuredApiBaseUrl);
-    if (configured.isNotEmpty) return configured;
-    if (kReleaseMode) {
-      throw StateError(
-        'AADYA_API_BASE_URL is required for release builds. ' 
-        'Pass --dart-define=AADYA_API_BASE_URL=https://<host>/api',
-      );
-    }
-    return 'http://13.48.49.45/api';
+    return configured.isNotEmpty ? configured : defaultApiBaseUrl;
   }
 
   static String get socketBaseUrl {
@@ -54,7 +51,10 @@ class AppConstants {
     final path = apiUri.path.endsWith('/api')
         ? apiUri.path.substring(0, apiUri.path.length - 4)
         : apiUri.path;
-    return apiUri.replace(path: path.isEmpty ? '/' : path).toString().replaceFirst(RegExp(r'/$'), '');
+    return apiUri
+        .replace(path: path.isEmpty ? '/' : path)
+        .toString()
+        .replaceFirst(RegExp(r'/$'), '');
   }
 
   static String get razorpayKeyId => _configuredRazorpayKeyId.trim();
@@ -104,19 +104,4 @@ class AppConstants {
         return const Color(0xFF94A3B8); // Slate 400
     }
   }
-}
-
-class Categories {
-  static const List<Map<String, dynamic>> items = [
-    {'image': 'https://cdn-icons-png.flaticon.com/512/2785/2785501.png', 'title': 'Doctors', 'route': 'doctors'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/883/883356.png', 'title': 'Pharmacy', 'route': 'pharmacy'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/3209/3209121.png', 'title': 'Pathology', 'route': 'pathology'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/2864/2864333.png', 'title': 'Physio', 'route': 'physiotherapy'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/563/563969.png', 'title': 'Prescription', 'route': 'prescriptions'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/2693/2693507.png', 'title': 'Appt.', 'route': 'appointments'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/2738/2738870.png', 'title': 'Medicines', 'route': 'medicines'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/2376/2376100.png', 'title': 'Records', 'route': 'health_records'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/1041/1041916.png', 'title': 'Chat', 'route': 'chat'},
-    {'image': 'https://cdn-icons-png.flaticon.com/512/1301/1301474.png', 'title': 'Lab Tests', 'route': 'lab_tests'},
-  ];
 }

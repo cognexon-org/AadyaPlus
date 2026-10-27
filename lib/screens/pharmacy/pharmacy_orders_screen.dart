@@ -1,17 +1,25 @@
-import 'package:aadya_plus/providers/pharmacy_provider.dart';
-import 'package:aadya_plus/screens/pharmacy/pharmacy_cart_screen.dart';
-import 'package:aadya_plus/screens/pharmacy/pharmacy_order_details_screen.dart';
-import 'package:aadya_plus/utils/constants.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/ui/app_ui.dart';
+import '../../features/onboarding/auth_parts.dart' show MethodSwitch;
+import '../../providers/pharmacy_provider.dart';
+import 'pharmacy_order_details_screen.dart';
+import 'pharmacy_shop_screen.dart';
+import 'pharmacy_widgets.dart';
+
+/// Every medicine order: the ones still moving, and the history.
 class PharmacyOrdersScreen extends StatefulWidget {
   const PharmacyOrdersScreen({super.key});
+
   @override
   State<PharmacyOrdersScreen> createState() => _PharmacyOrdersScreenState();
 }
 
 class _PharmacyOrdersScreenState extends State<PharmacyOrdersScreen> {
+  int _tab = 0;
+  static const _done = ['delivered', 'cancelled', 'returned'];
+
   @override
   void initState() {
     super.initState();
@@ -21,45 +29,61 @@ class _PharmacyOrdersScreenState extends State<PharmacyOrdersScreen> {
   @override
   Widget build(BuildContext context) {
     final p = context.watch<PharmacyProvider>();
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(title: const Text('Medicine Orders')),
-      body: RefreshIndicator(
-        onRefresh: p.loadOrders,
-        child: p.orders.isEmpty
-            ? ListView(children: const [SizedBox(height: 120), Center(child: Text('No medicine orders yet.'))])
-            : ListView.builder(
-                padding: const EdgeInsets.all(14),
-                itemCount: p.orders.length,
-                itemBuilder: (context, index) {
-                  final o = p.orders[index];
-                  final store = o['storeId'] is Map ? Map<String, dynamic>.from(o['storeId']) : <String, dynamic>{};
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(14),
-                      title: Text((o['orderNumber'] ?? 'Order').toString(), style: const TextStyle(fontWeight: FontWeight.w800)),
-                      subtitle: Text('${store['name'] ?? 'Pharmacy'}\n${_label(o['orderStatus'])} • ${_label(o['paymentStatus'])}'),
-                      isThreeLine: true,
-                      trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                        Text('₹${_double(o['totalAmount']).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w900, color: AppConstants.primaryColor)),
-                        const Icon(Icons.chevron_right),
-                      ]),
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => PharmacyOrderDetailsScreen(orderId: _id(o)))),
-                    ),
-                  );
-                },
+    final active = p.orders.where((o) => !_done.contains(o['orderStatus'])).toList();
+    final past = p.orders.where((o) => _done.contains(o['orderStatus'])).toList();
+    final list = _tab == 0 ? active : past;
+    return ModuleTheme(
+      accent: pharmacyAccent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: const AppTopBar(title: 'Medicine orders'),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+              child: MethodSwitch(
+                labels: ['Active${active.isEmpty ? '' : ' · ${active.length}'}', 'Past'],
+                index: _tab,
+                onChanged: (i) => setState(() => _tab = i),
               ),
+            ),
+            Expanded(
+              child: RefreshIndicator(
+                color: pharmacyAccent.color,
+                onRefresh: p.loadOrders,
+                child: list.isEmpty
+                    ? ListView(
+                        children: [
+                          AppEmptyState(
+                            illustration: Illustrations.onTheWay,
+                            title: _tab == 0 ? 'No orders on the way' : 'No past orders',
+                            message: _tab == 0 ? 'Order medicines and follow them here until they reach you.' : null,
+                            actionLabel: _tab == 0 ? 'Shop medicines' : null,
+                            onAction: _tab == 0
+                                ? () => Navigator.of(context).push(AppPageRoute(builder: (_) => const PharmacyShopScreen()))
+                                : null,
+                          ),
+                        ],
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                        itemCount: list.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 12),
+                        itemBuilder: (_, i) => AppEntrance(
+                          index: i.clamp(0, 6),
+                          child: OrderCard(
+                            order: list[i],
+                            onTap: () => Navigator.of(context).push(
+                              AppPageRoute(builder: (_) => PharmacyOrderDetailsScreen(orderId: idOf(list[i]))),
+                            ),
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        ),
       ),
-      floatingActionButton: p.cartCount > 0 ? FloatingActionButton.extended(
-        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PharmacyCartScreen())),
-        icon: const Icon(Icons.shopping_cart_outlined),
-        label: Text('Cart (${p.cartCount})'),
-      ) : null,
     );
   }
-
-  static String _id(Map<String, dynamic> m) => (m['_id'] ?? m['id'] ?? '').toString();
-  static double _double(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
-  static String _label(dynamic value) => value.toString().replaceAll('_', ' ').split(' ').map((e) => e.isEmpty ? e : '${e[0].toUpperCase()}${e.substring(1)}').join(' ');
 }

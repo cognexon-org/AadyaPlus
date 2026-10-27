@@ -50,12 +50,21 @@ Future<Map<String, String>> _buildHeaders(
   return merged;
 }
 
+/// Every request gives up after this long instead of waiting on the OS
+/// socket timeout (minutes) — a hung server used to leave screens spinning.
+const Duration requestTimeout = Duration(seconds: 20);
+
 Future<native_http.Response> _finish(
   Uri url,
-  Future<native_http.Response> request,
+  Map<String, String> sentHeaders,
+  Future<native_http.Response> Function(Map<String, String> headers) send,
 ) async {
-  final response = await request;
-  if (_isBackendRequest(url) && response.statusCode == 401) {
+  final response = await send(sentHeaders).timeout(requestTimeout);
+  // Only a signed-in request that's refused means the session ended — not a
+  // wrong password, or a request made after signing out.
+  if (_isBackendRequest(url) &&
+      response.statusCode == 401 &&
+      sentHeaders.containsKey('Authorization')) {
     final handler = _unauthorizedHandler;
     if (handler != null) await handler();
   }
@@ -68,7 +77,8 @@ Future<native_http.Response> get(
 }) async {
   return _finish(
     url,
-    _client.get(url, headers: await _buildHeaders(url, headers)),
+    await _buildHeaders(url, headers),
+    (h) => _client.get(url, headers: h),
   );
 }
 
@@ -80,12 +90,8 @@ Future<native_http.Response> post(
 }) async {
   return _finish(
     url,
-    _client.post(
-      url,
-      headers: await _buildHeaders(url, headers),
-      body: body,
-      encoding: encoding,
-    ),
+    await _buildHeaders(url, headers),
+    (h) => _client.post(url, headers: h, body: body, encoding: encoding),
   );
 }
 
@@ -97,12 +103,8 @@ Future<native_http.Response> put(
 }) async {
   return _finish(
     url,
-    _client.put(
-      url,
-      headers: await _buildHeaders(url, headers),
-      body: body,
-      encoding: encoding,
-    ),
+    await _buildHeaders(url, headers),
+    (h) => _client.put(url, headers: h, body: body, encoding: encoding),
   );
 }
 
@@ -114,12 +116,8 @@ Future<native_http.Response> patch(
 }) async {
   return _finish(
     url,
-    _client.patch(
-      url,
-      headers: await _buildHeaders(url, headers),
-      body: body,
-      encoding: encoding,
-    ),
+    await _buildHeaders(url, headers),
+    (h) => _client.patch(url, headers: h, body: body, encoding: encoding),
   );
 }
 
@@ -131,12 +129,8 @@ Future<native_http.Response> delete(
 }) async {
   return _finish(
     url,
-    _client.delete(
-      url,
-      headers: await _buildHeaders(url, headers),
-      body: body,
-      encoding: encoding,
-    ),
+    await _buildHeaders(url, headers),
+    (h) => _client.delete(url, headers: h, body: body, encoding: encoding),
   );
 }
 

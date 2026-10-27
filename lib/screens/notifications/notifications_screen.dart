@@ -1,10 +1,15 @@
-import 'package:aadya_plus/models/notification_item.dart';
-import 'package:aadya_plus/providers/notification_provider.dart';
-import 'package:aadya_plus/services/push_notification_service.dart';
-import 'package:aadya_plus/utils/constants.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/ui/app_ui.dart';
+import '../../models/notification_item.dart';
+import '../../providers/notification_provider.dart';
+import '../../services/push_notification_service.dart';
+
+/// Everything Aadya Plus told you, newest first: today, yesterday, earlier.
+/// Tap to open what it's about; swipe away to delete.
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
 
@@ -16,266 +21,165 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      context.read<NotificationProvider>().loadNotifications(silent: true);
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => context.read<NotificationProvider>().loadNotifications());
+  }
+
+  static (IconData, Color) style(String type) => switch (type) {
+    'appointment' || 'reminder' => (LucideIcons.calendarDays, ModuleAccent.doctor.color),
+    'payment' => (LucideIcons.creditCard, AppColors.health),
+    'prescription' => (LucideIcons.fileText, AppColors.brand),
+    'lab_report' || 'diagnostic' => (LucideIcons.flaskConical, ModuleAccent.lab.color),
+    'order' => (LucideIcons.pill, ModuleAccent.pharmacy.color),
+    'chat' => (LucideIcons.messageCircle, AppColors.brand),
+    _ => (LucideIcons.bell, AppColors.textSecondary),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.watch<NotificationProvider>();
+    final groups = [
+      ('Today', p.todayNotifications),
+      ('Yesterday', p.yesterdayNotifications),
+      ('Earlier', p.earlierNotifications),
+    ].where((g) => g.$2.isNotEmpty).toList();
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      appBar: AppTopBar(
+        title: 'Notifications',
+        subtitle: p.unreadCount > 0 ? '${p.unreadCount} unread' : null,
+        actions: [
+          if (p.unreadCount > 0)
+            TextButton(onPressed: p.markAllAsRead, child: const Text('Mark all read')),
+        ],
+      ),
+      body: RefreshIndicator(
+        color: AppColors.brand,
+        onRefresh: p.loadNotifications,
+        child: p.isLoading && p.notifications.isEmpty
+            ? const AppListSkeleton(count: 6)
+            : p.notifications.isEmpty
+            ? ListView(
+                children: [
+                  AppEmptyState(
+                    illustration: p.error != null ? Illustrations.offline : Illustrations.emptyNotifications,
+                    title: p.error != null ? 'Couldn’t load notifications' : 'You’re all caught up',
+                    message: p.error ?? 'Booking updates, reports and order tracking will show up here.',
+                  ),
+                ],
+              )
+            : ListView(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                children: [
+                  for (final (label, items) in groups) ...[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 10, 4, 8),
+                      child: Text(label, style: AppType.sans(fontSize: AppType.small, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+                    ),
+                    for (final (i, n) in items.indexed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: AppEntrance(index: i.clamp(0, 6), child: _Tile(item: n, provider: p)),
+                      ),
+                  ],
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+class _Tile extends StatelessWidget {
+  final NotificationItem item;
+  final NotificationProvider provider;
+  const _Tile({required this.item, required this.provider});
+
+  String get _when {
+    final d = item.date.toLocal();
+    final diff = DateTime.now().difference(d);
+    if (diff.inMinutes < 1) return 'Now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
+    if (diff.inHours < 24) return '${diff.inHours}h';
+    return DateFormat('d MMM').format(d);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        surfaceTintColor: Colors.white,
-        title: const Text(
-          'Notifications',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          Consumer<NotificationProvider>(
-            builder: (context, provider, _) {
-              if (provider.unreadCount == 0) return const SizedBox.shrink();
-              return TextButton(
-                onPressed: () async {
-                  try {
-                    await provider.markAllAsRead();
-                  } catch (error) {
-                    if (!context.mounted) return;
-                    _showError(context, error);
-                  }
-                },
-                child: Text(
-                  'Mark all read',
-                  style: TextStyle(color: AppConstants.primaryColor),
-                ),
-              );
-            },
-          ),
-        ],
+    final (icon, color) = _NotificationsScreenState.style(item.type);
+    final messenger = ScaffoldMessenger.of(context);
+    return Dismissible(
+      key: ValueKey(item.id),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(color: AppColors.errorBg, borderRadius: BorderRadius.circular(16)),
+        child: const Icon(LucideIcons.trash2, color: AppColors.error, size: 20),
       ),
-      body: Container(
-        color: Colors.white,
-        child: Consumer<NotificationProvider>(
-          builder: (context, provider, _) {
-            if (provider.isLoading && provider.notifications.isEmpty) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            if (provider.notifications.isEmpty) {
-              return RefreshIndicator(
-                onRefresh: provider.loadNotifications,
-                child: ListView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  children: [
-                    const SizedBox(height: 150),
-                    Icon(Icons.notifications_none,
-                        size: 80, color: Colors.grey[300]),
-                    const SizedBox(height: 20),
-                    Center(
-                      child: Text(
-                        provider.error ?? 'No notifications yet',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 18, color: Colors.grey[600]),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Center(
-                      child: Text(
-                        'Pull down to refresh',
-                        style: TextStyle(fontSize: 14, color: Colors.grey[400]),
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            return RefreshIndicator(
-              onRefresh: provider.loadNotifications,
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                children: [
-                  if (provider.error != null)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.shade50,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        'Last refresh failed: ${provider.error}',
-                        style: TextStyle(color: Colors.amber.shade900),
-                      ),
-                    ),
-                  if (provider.todayNotifications.isNotEmpty) ...[
-                    _buildDateHeader('Today'),
-                    ...provider.todayNotifications.map(
-                      (item) => _buildNotificationTile(context, item, provider),
-                    ),
-                  ],
-                  if (provider.yesterdayNotifications.isNotEmpty) ...[
-                    _buildDateHeader('Yesterday'),
-                    ...provider.yesterdayNotifications.map(
-                      (item) => _buildNotificationTile(context, item, provider),
-                    ),
-                  ],
-                  if (provider.earlierNotifications.isNotEmpty) ...[
-                    _buildDateHeader('Earlier'),
-                    ...provider.earlierNotifications.map(
-                      (item) => _buildNotificationTile(context, item, provider),
-                    ),
-                  ],
-                ],
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDateHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.bold,
-          color: Colors.black87,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNotificationTile(
-    BuildContext context,
-    NotificationItem item,
-    NotificationProvider provider,
-  ) {
-    final style = _styleForType(item.type);
-    final timeAgo = _timeAgo(item.date);
-
-    return GestureDetector(
-      onTap: () async {
-        if (!item.isRead) {
-          try {
-            await provider.markAsRead(item.id);
-          } catch (error) {
-            if (context.mounted) _showError(context, error);
-          }
+      onDismissed: (_) async {
+        try {
+          await provider.deleteNotification(item.id);
+        } catch (_) {
+          messenger.showSnackBar(const SnackBar(content: Text('Couldn’t delete that notification')));
         }
-        await PushNotificationService.instance
-            .openNotificationData(item.navigationData);
       },
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: item.isRead
-              ? Colors.white
-              : AppConstants.primaryColor.withOpacity(0.04),
-          border: Border.all(
-            color: item.isRead
-                ? Colors.grey[200]!
-                : AppConstants.primaryColor.withOpacity(0.2),
+      child: AppPressable(
+        onTap: () async {
+          if (!item.isRead) provider.markAsRead(item.id).catchError((_) {});
+          await PushNotificationService.instance.openNotificationData(item.navigationData);
+        },
+        scale: 0.99,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: item.isRead ? Colors.white : AppColors.brandVeryLight,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: item.isRead ? AppColors.borderStrong : AppColors.brandLight),
           ),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: style.color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(color: Color.alphaBlend(color.withValues(alpha: 0.12), Colors.white), borderRadius: BorderRadius.circular(12)),
+                child: Icon(icon, size: 18, color: color),
               ),
-              child: Icon(style.icon, color: style.color, size: 22),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          item.title,
-                          style: TextStyle(
-                            fontWeight: item.isRead
-                                ? FontWeight.w500
-                                : FontWeight.bold,
-                            fontSize: 14,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            item.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: item.isRead ? FontWeight.w600 : FontWeight.w800, color: AppColors.textStrong),
                           ),
                         ),
-                      ),
-                      if (!item.isRead)
-                        Container(
-                          width: 7,
-                          height: 7,
-                          decoration: const BoxDecoration(
-                            color: AppConstants.primaryColor,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    item.message,
-                    style: TextStyle(color: Colors.grey[700], fontSize: 13),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    timeAgo,
-                    style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                  ),
-                ],
+                        const SizedBox(width: 8),
+                        Text(_when, style: AppType.sans(fontSize: AppType.caption, color: AppColors.textTertiary)),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(item.message, maxLines: 3, overflow: TextOverflow.ellipsis, style: AppType.sans(fontSize: AppType.small, height: 1.4, color: AppColors.textSecondary)),
+                  ],
+                ),
               ),
-            ),
-          ],
+              if (!item.isRead) ...[
+                const SizedBox(width: 8),
+                Container(
+                  margin: const EdgeInsets.only(top: 6),
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(color: AppColors.brand, shape: BoxShape.circle),
+                ),
+              ],
+            ],
+          ),
         ),
-      ),
-    );
-  }
-
-  ({IconData icon, Color color}) _styleForType(String type) {
-    switch (type) {
-      case 'appointment':
-        return (icon: Icons.calendar_today, color: Colors.blue);
-      case 'prescription':
-        return (icon: Icons.description, color: Colors.purple);
-      case 'lab_report':
-      case 'diagnostic':
-        return (icon: Icons.science, color: Colors.teal);
-      case 'payment':
-        return (icon: Icons.payment, color: Colors.green);
-      case 'order':
-        return (icon: Icons.local_pharmacy, color: Colors.orange);
-      case 'chat':
-        return (icon: Icons.chat_bubble_outline, color: Colors.indigo);
-      default:
-        return (icon: Icons.notifications, color: Colors.grey);
-    }
-  }
-
-  String _timeAgo(DateTime date) {
-    final difference = DateTime.now().difference(date);
-    if (difference.inMinutes < 1) return 'Just now';
-    if (difference.inMinutes < 60) return '${difference.inMinutes}m ago';
-    if (difference.inHours < 24) return '${difference.inHours}h ago';
-    if (difference.inDays < 7) return '${difference.inDays}d ago';
-    return '${date.day}/${date.month}/${date.year}';
-  }
-
-  void _showError(BuildContext context, Object error) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(error.toString().replaceFirst('Exception: ', '')),
       ),
     );
   }

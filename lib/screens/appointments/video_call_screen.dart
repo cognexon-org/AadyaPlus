@@ -32,10 +32,19 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   void initState() {
     super.initState();
 
+    // The call page may not navigate away from the meeting's own site, so
+    // camera/mic requests can only ever come from the meeting.
+    final meetingHost = Uri.tryParse(widget.joinUrl)?.host ?? '';
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
         NavigationDelegate(
+          onNavigationRequest: (request) {
+            final host = Uri.tryParse(request.url)?.host ?? '';
+            return host == meetingHost || host.endsWith('.$meetingHost')
+                ? NavigationDecision.navigate
+                : NavigationDecision.prevent;
+          },
           onPageStarted: (_) {
             if (mounted) setState(() => _isLoading = true);
           },
@@ -53,8 +62,18 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
 
     if (Platform.isAndroid) {
       final androidController = _controller.platform as AndroidWebViewController;
+      // Camera and microphone only — anything else the page asks for is
+      // refused.
+      const allowed = {
+        WebViewPermissionResourceType.camera,
+        WebViewPermissionResourceType.microphone,
+      };
       androidController.setOnPlatformPermissionRequest((request) {
-        request.grant();
+        if (request.types.every(allowed.contains)) {
+          request.grant();
+        } else {
+          request.deny();
+        }
       });
     }
 

@@ -1,147 +1,566 @@
-import 'package:aadya_plus/providers/lab_test_provider.dart';
-import 'package:aadya_plus/screens/payments/payment_checkout_screen.dart';
-import 'package:aadya_plus/services/patient_records_service.dart';
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../../core/ui/app_ui.dart';
+import '../../core/utils/server_dates.dart';
+import '../../providers/lab_test_provider.dart';
+import '../../services/patient_records_service.dart';
+import '../lab_tests/lab_test_screen.dart' show labAccent;
+import '../payments/payment_checkout_screen.dart';
+
+/// A lab order: progress from booking to report, who's collecting the
+/// sample, each test's state, results (with flags) once released, and
+/// pay / reschedule / cancel / download.
 class DiagnosticOrderDetailsScreen extends StatefulWidget {
   final String orderId;
-  const DiagnosticOrderDetailsScreen({super.key, required this.orderId});
+  final bool justBooked;
+  const DiagnosticOrderDetailsScreen({super.key, required this.orderId, this.justBooked = false});
+
   @override
   State<DiagnosticOrderDetailsScreen> createState() => _DiagnosticOrderDetailsScreenState();
 }
 
 class _DiagnosticOrderDetailsScreenState extends State<DiagnosticOrderDetailsScreen> {
-  Map<String, dynamic>? _order;
-  bool _loading = true;
-  bool _actionBusy = false;
+  Map<String, dynamic>? _o;
   String? _error;
+  bool _busy = false;
+  Timer? _poll;
+
+  static const _steps = [
+    ('Booked', LucideIcons.calendarCheck),
+    ('Collected', LucideIcons.testTube),
+    ('Testing', LucideIcons.flaskConical),
+    ('Report', LucideIcons.fileCheck),
+  ];
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+    _poll = Timer.periodic(const Duration(seconds: 45), (_) {
+      final s = _o?['status'];
+      if (s != null && s != 'completed' && s != 'cancelled') _load(quiet: true);
+    });
+  }
 
-  Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load({bool quiet = false}) async {
     try {
-      final order = await context.read<LabTestProvider>().getOrder(widget.orderId);
-      if (mounted) setState(() => _order = order);
+      final o = await context.read<LabTestProvider>().getOrder(widget.orderId);
+      if (mounted) setState(() => _o = o);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted && !quiet) setState(() => _error = e.toString().replaceFirst(RegExp(r'^\w*Exception:\s*'), ''));
+    }
+  }
+
+  int _step(String status) => switch (status) {
+    'requested' || 'scheduled' => 0,
+    'sample_collected' => 1,
+    'processing' || 'ready_for_review' => 2,
+    'completed' => 3,
+    _ => -1,
+  };
+
+  Future<void> _run(Future<void> Function() action, String done) async {
+    setState(() => _busy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await action();
+      await _load();
+      messenger.showSnackBar(SnackBar(content: Text(done)));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.toString().replaceFirst(RegExp(r'^\w*Exception:\s*'), '')), backgroundColor: AppColors.error));
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _cancel() async {
-    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
-      title: const Text('Cancel diagnostic booking?'),
-      content: const Text('Cancellation is only allowed before sample processing begins and is subject to the lab cancellation window.'),
-      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep booking')), FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel'))],
-    ));
-    if (ok != true) return;
-    setState(() => _actionBusy = true);
-    try { await context.read<LabTestProvider>().cancelOrder(widget.orderId); await _load(); }
-    catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); }
-    finally { if (mounted) setState(() => _actionBusy = false); }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Cancel these tests?'),
+        content: const Text('Any payment is refunded to how you paid.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Keep')),
+          FilledButton(style: FilledButton.styleFrom(backgroundColor: AppColors.error), onPressed: () => Navigator.pop(c, true), child: const Text('Cancel tests')),
+        ],
+      ),
+    );
+    if (ok == true && mounted) _run(() => context.read<LabTestProvider>().cancelOrder(widget.orderId), 'Booking cancelled');
   }
 
-  Future<void> _reschedule() async {
-    final order = _order!;
-    final lab = order['pathologyId'];
-    final labId = lab is Map ? (lab['_id'] ?? '').toString() : lab.toString();
-    DateTime date = DateTime.now().add(const Duration(days: 1));
-    final picked = await showDatePicker(context: context, initialDate: date, firstDate: DateTime.now(), lastDate: DateTime.now().add(const Duration(days: 60)));
-    if (picked == null) return;
-    date = picked;
-    if (!mounted) return;
-    setState(() => _actionBusy = true);
+  Future<void> _reschedule(Map<String, dynamic> o) async {
+    final labId = idOf(o['pathologyId']).isNotEmpty ? idOf(o['pathologyId']) : (o['pathologyId'] ?? '').toString();
+    final picked = await showModalBottomSheet<(DateTime, Map<String, dynamic>)>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => _RescheduleSheet(labId: labId),
+    );
+    if (picked == null || !mounted) return;
+    _run(
+      () => context.read<LabTestProvider>().reschedule(
+        id: widget.orderId,
+        date: picked.$1,
+        startTime: (picked.$2['startTime'] ?? '').toString(),
+        endTime: (picked.$2['endTime'] ?? '').toString(),
+      ),
+      'Moved to ${DateFormat('EEE, d MMM').format(picked.$1)}',
+    );
+  }
+
+  Future<void> _report() => _run(() => PatientRecordsService.instance.downloadAndOpenLabReport(widget.orderId), 'Report opened');
+
+  Future<void> _pay(Map<String, dynamic> o) async {
+    final paid = await Navigator.of(context).push<bool>(AppPageRoute(
+      builder: (_) => PaymentCheckoutScreen(entityType: 'labtest', entityId: widget.orderId, title: 'Lab tests', expectedAmount: asDouble(o['totalAmount'])),
+    ));
+    if (paid == true) _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final o = _o;
+    return ModuleTheme(
+      accent: labAccent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: AppTopBar(title: 'Lab tests', subtitle: (o?['labTestNumber'] ?? '').toString().isEmpty ? null : o!['labTestNumber'].toString()),
+        body: o == null
+            ? (_error != null
+                  ? Center(child: AppEmptyState(illustration: Illustrations.offline, title: 'Couldn’t load this booking', message: _error, actionLabel: 'Try again', onAction: _load))
+                  : const AppDetailSkeleton())
+            : RefreshIndicator(color: labAccent.color, onRefresh: _load, child: _body(o)),
+        bottomNavigationBar: o == null ? null : _bottom(o),
+      ),
+    );
+  }
+
+  Widget? _bottom(Map<String, dynamic> o) {
+    final status = (o['status'] ?? '').toString();
+    if (status == 'cancelled') return null;
+    final unpaid = o['paymentStatus'] == 'pending' && asDouble(o['totalAmount']) > 0;
+    final Widget? button = status == 'completed'
+        ? AppButton(label: 'Download report', icon: LucideIcons.download, loading: _busy, onPressed: _report)
+        : unpaid
+        ? AppButton(label: 'Pay ${appRupees(o['totalAmount'])}', icon: LucideIcons.lock, loading: _busy, onPressed: () => _pay(o))
+        : null;
+    if (button == null) return null;
+    return SafeArea(
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+        decoration: const BoxDecoration(border: Border(top: BorderSide(color: AppColors.border))),
+        child: button,
+      ),
+    );
+  }
+
+  Widget _body(Map<String, dynamic> o) {
+    final status = (o['status'] ?? '').toString();
+    final pill = PatientStatus.of(status);
+    final step = _step(status);
+    final lab = mapOf(o['pathologyId']);
+    final collector = mapOf(o['assignedPhlebotomistId']);
+    final tests = mapsOf(o['tests']);
+    final home = o['type'] == 'home_collection';
+    final day = serverDay(o['scheduledDate']);
+    final when = [
+      if (day != null) DateFormat('EEE, d MMM').format(day),
+      if ((o['startTime'] ?? '').toString().isNotEmpty) '${o['startTime']}${(o['endTime'] ?? '').toString().isNotEmpty ? '–${o['endTime']}' : ''}',
+    ].join(' · ');
+    final early = ['requested', 'scheduled'].contains(status);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+      children: [
+        if (widget.justBooked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: AppEntrance(
+              child: Row(
+                children: [
+                  const AppIllustration(Illustrations.success, height: 64),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Booked! ${home ? 'A collector will come at your slot.' : 'See you at the lab.'}',
+                      style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: AppColors.textStrong),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(color: pill.background, borderRadius: BorderRadius.circular(18)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(pill.icon, size: 22, color: pill.color),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(pill.label, style: AppType.sans(fontSize: AppType.title + 1, fontWeight: FontWeight.w800, color: pill.color))),
+                ],
+              ),
+              if (when.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('${home ? 'Home collection' : 'Lab visit'} · $when', style: AppType.sans(fontSize: AppType.small, color: AppColors.textPrimary)),
+              ],
+              if (step >= 0) ...[
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    for (var i = 0; i < _steps.length; i++) ...[
+                      Column(
+                        children: [
+                          AnimatedContainer(
+                            duration: AppMotion.medium,
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              color: i <= step ? labAccent.color : Colors.white,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: i <= step ? labAccent.color : AppColors.borderStrong, width: 1.5),
+                            ),
+                            child: Icon(_steps[i].$2, size: 14, color: i <= step ? Colors.white : AppColors.textTertiary),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            _steps[i].$1,
+                            style: AppType.sans(fontSize: AppType.micro, fontWeight: i == step ? FontWeight.w800 : FontWeight.w500, color: i <= step ? AppColors.textStrong : AppColors.textTertiary),
+                          ),
+                        ],
+                      ),
+                      if (i < _steps.length - 1)
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: TweenAnimationBuilder<double>(
+                              tween: Tween(begin: 0, end: i < step ? 1 : 0),
+                              duration: const Duration(milliseconds: 700),
+                              builder: (_, v, _) => LinearProgressIndicator(value: v, minHeight: 3, backgroundColor: AppColors.borderStrong, color: labAccent.color),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (home && collector.isNotEmpty && early) ...[
+          const SizedBox(height: 12),
+          AppCard(
+            child: Row(
+              children: [
+                AppAvatar(name: (collector['name'] ?? 'Collector').toString(), size: 44, color: labAccent.color),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text((collector['name'] ?? 'Sample collector').toString(), style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w700, color: AppColors.textStrong)),
+                      Text(
+                        o['collectionStatus'] == 'en_route' ? 'On the way to you' : o['collectionStatus'] == 'arrived' ? 'Has arrived' : 'Will collect your sample',
+                        style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary),
+                      ),
+                    ],
+                  ),
+                ),
+                if ((collector['phone'] ?? '').toString().isNotEmpty)
+                  IconButton.filled(
+                    tooltip: 'Call',
+                    style: IconButton.styleFrom(backgroundColor: labAccent.color),
+                    onPressed: () => launchUrl(Uri.parse('tel:${collector['phone']}')),
+                    icon: const Icon(LucideIcons.phone, size: 18),
+                  ),
+              ],
+            ),
+          ),
+        ],
+        if (o['fastingRequired'] == true && early) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: AppColors.warningBg, borderRadius: BorderRadius.circular(14)),
+            child: Row(
+              children: [
+                const Icon(LucideIcons.utensilsCrossed, size: 17, color: AppColors.warning),
+                const SizedBox(width: 10),
+                Expanded(child: Text('Fast for 8–12 hours before your slot. Water is fine.', style: AppType.sans(fontSize: AppType.small, color: AppColors.textPrimary))),
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 20),
+        _Title('Tests · ${tests.length}'),
+        for (final t in tests) Padding(padding: const EdgeInsets.only(bottom: 10), child: _TestResult(test: t)),
+        if ((o['resultNotes'] ?? '').toString().isNotEmpty) ...[
+          AppCard(child: Text(o['resultNotes'].toString(), style: AppType.sans(fontSize: AppType.body, height: 1.45, color: AppColors.textPrimary))),
+          const SizedBox(height: 10),
+        ],
+        const SizedBox(height: 10),
+        const _Title('Lab'),
+        AppCard(
+          child: Row(
+            children: [
+              Icon(LucideIcons.building2, size: 19, color: labAccent.color),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text((lab['labName'] ?? 'Lab').toString(), style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w700, color: AppColors.textStrong)),
+                    if (lab['address'] is Map)
+                      Text(
+                        [lab['address']['street'] ?? lab['address']['line1'], lab['address']['city']].where((e) => e != null && e.toString().isNotEmpty).join(', '),
+                        style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary),
+                      ),
+                  ],
+                ),
+              ),
+              if ((lab['phone'] ?? '').toString().isNotEmpty)
+                IconButton(tooltip: 'Call lab', onPressed: () => launchUrl(Uri.parse('tel:${lab['phone']}')), icon: Icon(LucideIcons.phone, size: 18, color: labAccent.color)),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        const _Title('Bill'),
+        AppCard(
+          child: Column(
+            children: [
+              _Line('Tests', appRupees(o['subtotal'] ?? tests.fold<double>(0, (s, t) => s + asDouble(t['price'])))),
+              if (asDouble(o['collectionCharges']) > 0) _Line('Home collection', appRupees(o['collectionCharges'])),
+              const Divider(height: 18),
+              Row(
+                children: [
+                  Expanded(child: Text('Total', style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: AppColors.textStrong))),
+                  PatientStatus.of(o['paymentStatus'] == 'pending' ? 'payment_pending' : o['paymentStatus']?.toString()).pill(icon: false),
+                  const SizedBox(width: 8),
+                  Text(appRupees(o['totalAmount']), style: AppType.sans(fontSize: AppType.title + 1, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+                ],
+              ),
+            ],
+          ),
+        ),
+        if (early) ...[
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: AppSecondaryButton(label: 'Reschedule', icon: LucideIcons.calendarClock, onPressed: _busy ? null : () => _reschedule(o))),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextButton(
+                  onPressed: _busy ? null : _cancel,
+                  style: TextButton.styleFrom(foregroundColor: AppColors.error, minimumSize: const Size.fromHeight(46)),
+                  child: const Text('Cancel'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _Title extends StatelessWidget {
+  final String text;
+  const _Title(this.text);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: Text(text, style: AppType.sans(fontSize: AppType.title + 1, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+  );
+}
+
+class _Line extends StatelessWidget {
+  final String label;
+  final String value;
+  const _Line(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      children: [
+        Expanded(child: Text(label, style: AppType.sans(fontSize: AppType.body, color: AppColors.textSecondary))),
+        Text(value, style: AppType.sans(fontSize: AppType.body, fontWeight: FontWeight.w600, color: AppColors.textStrong)),
+      ],
+    ),
+  );
+}
+
+class _TestResult extends StatelessWidget {
+  final Map<String, dynamic> test;
+  const _TestResult({required this.test});
+
+  static Color _flag(String? f) => switch (f) {
+    'high' || 'low' => AppColors.warning,
+    'critical' => AppColors.error,
+    _ => AppColors.health,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final results = mapsOf(test['results']);
+    final status = PatientStatus.of(test['status']?.toString());
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(borderRadius: BorderRadius.circular(16), border: Border.all(color: AppColors.borderStrong)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text((test['testName'] ?? 'Test').toString(), style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w700, color: AppColors.textStrong)),
+              ),
+              status.pill(icon: false),
+            ],
+          ),
+          if (results.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            for (final r in results)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 5,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text((r['parameter'] ?? '').toString(), style: AppType.sans(fontSize: AppType.small, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+                          if ((r['normalRange'] ?? '').toString().isNotEmpty)
+                            Text('Normal ${r['normalRange']}', style: AppType.sans(fontSize: AppType.micro, color: AppColors.textTertiary)),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      '${r['value'] ?? '–'} ${r['unit'] ?? ''}'.trim(),
+                      style: AppType.sans(fontSize: AppType.body, fontWeight: FontWeight.w800, color: _flag(r['flag']?.toString())),
+                    ),
+                    const SizedBox(width: 8),
+                    if (r['flag'] != null && r['flag'] != 'normal')
+                      AppStatusPill(
+                        text: sentenceCase(r['flag'].toString()),
+                        color: _flag(r['flag'].toString()),
+                        background: _flag(r['flag'].toString()).withValues(alpha: 0.1),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _RescheduleSheet extends StatefulWidget {
+  final String labId;
+  const _RescheduleSheet({required this.labId});
+
+  @override
+  State<_RescheduleSheet> createState() => _RescheduleSheetState();
+}
+
+class _RescheduleSheetState extends State<_RescheduleSheet> {
+  late DateTime _date = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day + 1);
+  List<Map<String, dynamic>>? _slots;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _slots = null);
     try {
-      final slots = await context.read<LabTestProvider>().slots(labId, date);
-      final available = slots.where((s) => s['isAvailable'] == true).toList();
-      if (!mounted) return;
-      if (available.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No available slots on that date.')));
-        return;
-      }
-      final selected = await showModalBottomSheet<Map<String, dynamic>>(
-        context: context,
-        builder: (_) => SafeArea(child: ListView(shrinkWrap: true, children: [
-          const ListTile(title: Text('Select a new slot', style: TextStyle(fontWeight: FontWeight.w900))),
-          ...available.map((s) => ListTile(title: Text('${s['startTime']} - ${s['endTime']}'), onTap: () => Navigator.pop(context, s))),
-        ])),
-      );
-      if (selected == null || !mounted) return;
-      await context.read<LabTestProvider>().reschedule(id: widget.orderId, date: date, startTime: selected['startTime'].toString(), endTime: selected['endTime'].toString());
-      await _load();
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
-    } finally {
-      if (mounted) setState(() => _actionBusy = false);
+      final s = await context.read<LabTestProvider>().slots(widget.labId, _date);
+      if (mounted) setState(() => _slots = s.where((x) => x['isAvailable'] != false && (x['availableCapacity'] as num? ?? 1) > 0).toList());
+    } catch (_) {
+      if (mounted) setState(() => _slots = []);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final o = _order;
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(title: Text(o?['labTestNumber']?.toString() ?? 'Diagnostic Order')),
-      body: _loading ? const Center(child: CircularProgressIndicator()) : _error != null ? Center(child: Text(_error!)) : o == null ? const SizedBox() : RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(padding: const EdgeInsets.all(16), children: [
-          _card('Current status', [
-            Text(_label(o['status']), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: AppConstants.primaryColor)),
-            Text('${_label(o['type'])} • Payment ${_label(o['paymentStatus'])}'),
-            if (o['type'] == 'home_collection') Text('Collection: ${_label(o['collectionStatus'])}'),
-            if (o['assignedPhlebotomistId'] is Map) Text('Collector: ${o['assignedPhlebotomistId']['name'] ?? ''} ${o['assignedPhlebotomistId']['phone'] ?? ''}'),
-          ]),
-          const SizedBox(height: 12),
-          _card('Booking', [
-            Text('Date: ${_date(o['scheduledDate'])}'),
-            Text('Time: ${o['startTime'] ?? o['scheduledTime'] ?? ''} - ${o['endTime'] ?? ''}'),
-            if ((o['instructions'] ?? '').toString().isNotEmpty) Text((o['instructions']).toString(), style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700)),
-          ]),
-          const SizedBox(height: 12),
-          _card('Tests / packages', [
-            ..._list(o['packages']).map((x) => ListTile(contentPadding: EdgeInsets.zero, dense: true, leading: const Icon(Icons.inventory_2_outlined), title: Text((x['packageName'] ?? 'Package').toString()), trailing: Text('₹${_double(x['price']).toStringAsFixed(0)}'))),
-            ..._list(o['tests']).map((x) => ListTile(contentPadding: EdgeInsets.zero, dense: true, leading: const Icon(Icons.biotech_outlined), title: Text((x['testName'] ?? 'Test').toString()), subtitle: Text(_label(x['status'])))),
-            const Divider(),
-            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text('Total', style: TextStyle(fontWeight: FontWeight.w800)), Text('₹${_double(o['totalAmount']).toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900))]),
-          ]),
-          const SizedBox(height: 12),
-          _card('Timeline', [
-            ..._list(o['statusHistory']).reversed.map((h) => ListTile(contentPadding: EdgeInsets.zero, dense: true, leading: const Icon(Icons.circle, size: 12, color: AppConstants.primaryColor), title: Text(_label(h['status'])), subtitle: Text((h['note'] ?? '').toString()))),
-          ]),
-          const SizedBox(height: 14),
-          if (o['paymentStatus'] == 'pending' && o['status'] != 'cancelled')
-            ElevatedButton.icon(
-              onPressed: _actionBusy ? null : () async {
-                final paid = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => PaymentCheckoutScreen(entityType: 'labtest', entityId: widget.orderId, title: 'Diagnostic order', expectedAmount: _double(o['totalAmount']))));
-                if (paid == true) _load();
-              },
-              icon: const Icon(Icons.lock_outline), label: const Text('Pay securely online'),
+    final start = DateTime(DateTime.now().year, DateTime.now().month, DateTime.now().day + 1);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Pick a new slot', style: AppType.sans(fontSize: AppType.heading + 1, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+            const SizedBox(height: 14),
+            SizedBox(
+              height: 64,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: 10,
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
+                itemBuilder: (_, i) {
+                  final d = start.add(Duration(days: i));
+                  final sel = d == _date;
+                  return AppPressable(
+                    onTap: () {
+                      setState(() => _date = d);
+                      _load();
+                    },
+                    child: Container(
+                      width: 54,
+                      decoration: BoxDecoration(color: sel ? labAccent.color : AppColors.panel, borderRadius: BorderRadius.circular(14)),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(DateFormat('EEE').format(d), style: AppType.sans(fontSize: AppType.caption, color: sel ? Colors.white70 : AppColors.textSecondary)),
+                          Text('${d.day}', style: AppType.sans(fontSize: 18, fontWeight: FontWeight.w800, color: sel ? Colors.white : AppColors.textStrong)),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
-          if (o['reportFile'] is Map || (o['reportUrl'] ?? '').toString().isNotEmpty || o['status'] == 'completed')
-            ElevatedButton.icon(
-              onPressed: _actionBusy ? null : () async {
-                try { await PatientRecordsService.instance.downloadAndOpenLabReport(widget.orderId); }
-                catch (e) { if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()))); }
-              },
-              icon: const Icon(Icons.download_outlined), label: const Text('Download secure report'),
-            ),
-          if (['scheduled', 'requested'].contains(o['status'])) ...[
-            OutlinedButton.icon(onPressed: _actionBusy ? null : _reschedule, icon: const Icon(Icons.event_repeat_outlined), label: const Text('Reschedule')),
-            OutlinedButton.icon(onPressed: _actionBusy ? null : _cancel, icon: const Icon(Icons.cancel_outlined), label: const Text('Cancel booking')),
+            const SizedBox(height: 14),
+            if (_slots == null)
+              const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator()))
+            else if (_slots!.isEmpty)
+              Text('No free slots that day.', style: AppType.sans(fontSize: AppType.body, color: AppColors.textSecondary))
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final s in _slots!)
+                    ActionChip(
+                      label: Text('${s['startTime']}'),
+                      onPressed: () => Navigator.pop(context, (_date, s)),
+                    ),
+                ],
+              ),
           ],
-        ]),
+        ),
       ),
     );
   }
-
-  Widget _card(String title, List<Widget> children) => Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.grey.shade200)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900)), const SizedBox(height: 8), ...children]));
-  static List<Map<String, dynamic>> _list(dynamic v) => v is List ? v.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList() : [];
-  static double _double(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
-  static String _label(dynamic value) => value.toString().replaceAll('_', ' ').split(' ').map((e) => e.isEmpty ? e : '${e[0].toUpperCase()}${e.substring(1)}').join(' ');
-  static String _date(dynamic value) { final d = DateTime.tryParse(value?.toString() ?? ''); return d == null ? '' : '${d.day}/${d.month}/${d.year}'; }
 }

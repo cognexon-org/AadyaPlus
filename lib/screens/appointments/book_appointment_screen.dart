@@ -1,866 +1,409 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
-import 'package:aadya_plus/models/doctor.dart';
-import 'package:aadya_plus/providers/appointment_provider.dart';
-import 'package:aadya_plus/utils/constants.dart';
-import 'package:intl/intl.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
-import 'dart:convert';
-import 'package:aadya_plus/services/api_client.dart' as http;
 
+import '../../core/ui/app_ui.dart';
+import '../../features/onboarding/onboarding_widgets.dart' show AuthNote;
+import '../../models/doctor.dart';
+import '../../providers/appointment_provider.dart';
+import '../../providers/location_provider.dart';
+import '../../widgets/slot_picker.dart';
+import 'booking_confirmed_screen.dart';
+
+/// Pick how, when and why — then book. Slots come live from the
+/// professional's calendar for the chosen visit type and day.
 class BookAppointmentScreen extends StatefulWidget {
   final Doctor doctor;
-
-  const BookAppointmentScreen({super.key, required this.doctor});
+  final String? initialVisit;
+  const BookAppointmentScreen({
+    super.key,
+    required this.doctor,
+    this.initialVisit,
+  });
 
   @override
   State<BookAppointmentScreen> createState() => _BookAppointmentScreenState();
 }
 
 class _BookAppointmentScreenState extends State<BookAppointmentScreen> {
-  DateTime? _selectedDate;
-  Map<String, dynamic>? _selectedSlot;
-  String _selectedType = 'clinic';
-  final TextEditingController _symptomsController = TextEditingController();
-  final TextEditingController _notesController = TextEditingController();
-  final TextEditingController _addressController = TextEditingController();
-  
-  List<Map<String, dynamic>> _availableSlots = [];
-  bool _loadingSlots = false;
-  bool _isBooking = false;
+  late final List<String> _visits = [
+    if (widget.doctor.clinicEnabled) 'clinic',
+    if (widget.doctor.videoEnabled) 'video',
+    if (widget.doctor.homeEnabled) 'home',
+  ];
+  late String _visit = _visits.contains(widget.initialVisit)
+      ? widget.initialVisit!
+      : (_visits.isNotEmpty ? _visits.first : 'clinic');
+  DateTime? _when;
+  int _reload = 0;
+  final _symptoms = <String>{};
+  final _reason = TextEditingController();
+  final _house = TextEditingController();
+  bool _booking = false;
+  String? _error;
 
-  // Location state for home visits
-  double? _latitude;
-  double? _longitude;
-  bool _isFetchingLocation = false;
-  String? _locationError;
+  static const _commonSymptoms = [
+    'Fever',
+    'Cough',
+    'Cold',
+    'Headache',
+    'Body pain',
+    'Stomach upset',
+    'Skin problem',
+    'Back pain',
+    'Joint pain',
+    'Follow-up',
+  ];
+
+  ModuleAccent get _accent =>
+      widget.doctor.isPhysio ? ModuleAccent.physio : ModuleAccent.doctor;
+
+  double get _fee => switch (_visit) {
+    'video' => widget.doctor.videoCallFee,
+    'home' => widget.doctor.homeVisitFee,
+    _ => widget.doctor.consultationFee,
+  };
 
   @override
   void dispose() {
-    _symptomsController.dispose();
-    _notesController.dispose();
-    _addressController.dispose();
+    _reason.dispose();
+    _house.dispose();
     super.dispose();
   }
 
-  List<DateTime> _generateDateOptions() {
-    final dates = <DateTime>[];
-    final today = DateTime.now();
-    for (int i = 1; i <= 14; i++) {
-      dates.add(today.add(Duration(days: i)));
-    }
-    return dates;
-  }
-
-  double _getConsultationFee() {
-    switch (_selectedType) {
-      case 'video':
-        return widget.doctor.videoCallFee > 0 
-            ? widget.doctor.videoCallFee 
-            : widget.doctor.consultationFee;
-      case 'home':
-        return widget.doctor.homeVisitFee > 0 
-            ? widget.doctor.homeVisitFee 
-            : widget.doctor.consultationFee;
-      default:
-        return widget.doctor.consultationFee;
-    }
-  }
-
-  Future<void> _fetchSlots() async {
-    if (_selectedDate == null) return;
-    
-    setState(() {
-      _loadingSlots = true;
-      _selectedSlot = null;
-      _availableSlots = [];
-    });
-
-    final provider = Provider.of<AppointmentProvider>(context, listen: false);
-    final dateStr = DateFormat('yyyy-MM-dd').format(_selectedDate!);
-    
-    final slots = await provider.fetchAvailableSlots(
-      professionalId: widget.doctor.id,
-      professionalType: widget.doctor.professionalType,
-      date: dateStr,
-      type: _selectedType,
-    );
-
-    setState(() {
-      _availableSlots = slots;
-      _loadingSlots = false;
-    });
-  }
-
-  // ───── Location Methods ─────
-
-  Future<void> _fetchCurrentLocation() async {
-    setState(() {
-      _isFetchingLocation = true;
-      _locationError = null;
-    });
-
-    try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        setState(() {
-          _isFetchingLocation = false;
-          _locationError = 'Location services are disabled. Please enable GPS.';
-        });
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          setState(() {
-            _isFetchingLocation = false;
-            _locationError = 'Location permission denied.';
-          });
-          return;
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        setState(() {
-          _isFetchingLocation = false;
-          _locationError = 'Location permanently denied. Enable in Settings.';
-        });
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-
-      setState(() {
-        _latitude = position.latitude;
-        _longitude = position.longitude;
-      });
-
-      // Reverse geocode to get address
-      await _reverseGeocode(position.latitude, position.longitude);
-    } catch (e) {
-      setState(() {
-        _locationError = 'Failed to get location. Please try again.';
-      });
-    } finally {
-      setState(() => _isFetchingLocation = false);
-    }
-  }
-
-  Future<void> _reverseGeocode(double lat, double lng) async {
-    try {
-      // Use Nominatim for reverse geocoding (same as web frontend)
-      final url = 'https://nominatim.openstreetmap.org/reverse?format=json&lat=$lat&lon=$lng';
-      final response = await http.get(Uri.parse(url), headers: {
-        'User-Agent': 'AadyaPlus/1.0',
-      });
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['display_name'] != null) {
-          _addressController.text = data['display_name'];
-        } else {
-          _addressController.text = 'Location at ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
-        }
-      } else {
-        _addressController.text = 'Location at ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
-      }
-    } catch (e) {
-      _addressController.text = 'Location at ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}';
-    }
-  }
-
-  // ───── Booking ─────
-
-  Future<void> _bookAppointment() async {
-    if (_selectedDate == null) {
-      _showError('Please select a date');
+  Future<void> _book() async {
+    if (_when == null) {
+      setState(() => _error = 'Choose a time');
       return;
     }
-    if (_selectedSlot == null) {
-      _showError('Please select a time slot');
-      return;
-    }
-    if (_symptomsController.text.trim().isEmpty) {
-      _showError('Please describe your symptoms');
-      return;
-    }
-
-    // Validate location for home visits
-    if (_selectedType == 'home') {
-      if (_latitude == null || _longitude == null) {
-        _showError('Please provide your location for a home visit');
+    final location = context.read<LocationProvider>();
+    if (_visit == 'home') {
+      if (!location.hasPosition) {
+        setState(() => _error = 'Share your location so they can find you');
         return;
       }
-      if (_addressController.text.trim().isEmpty) {
-        _showError('Please provide your address for the home visit');
+      if (_house.text.trim().isEmpty) {
+        setState(() => _error = 'Add your house or flat number');
         return;
       }
     }
-
-    setState(() => _isBooking = true);
-
-    final provider = Provider.of<AppointmentProvider>(context, listen: false);
-
+    setState(() {
+      _booking = true;
+      _error = null;
+    });
     try {
-      await provider.bookAppointment(
-        doctorId: widget.doctor.id,
-        doctorName: widget.doctor.name,
-        specialty: widget.doctor.specialty,
-        hospital: widget.doctor.hospital,
-        dateTime: _selectedDate!,
-        consultationFee: _getConsultationFee(),
-        appointmentType: _selectedType,
+      final address = [
+        _house.text.trim(),
+        location.label ?? '',
+      ].where((e) => e.isNotEmpty).join(', ');
+      final result = await context.read<AppointmentProvider>().book(
+        professionalId: widget.doctor.id,
         professionalType: widget.doctor.professionalType,
-        startTime: _selectedSlot!['startTime'],
-        symptoms: _symptomsController.text.trim(),
-        reason: _notesController.text.trim(),
-        address: _selectedType == 'home' ? _addressController.text.trim() : null,
-        locationCoordinates: _selectedType == 'home' && _longitude != null && _latitude != null
-            ? [_longitude!, _latitude!]  // GeoJSON: [lng, lat]
-            : null,
+        date: _when!,
+        startTime: DateFormat('HH:mm').format(_when!),
+        visit: _visit,
+        symptoms: _symptoms.toList(),
+        reason: _reason.text.trim(),
+        address: _visit == 'home' ? address : null,
+        latitude: location.lat,
+        longitude: location.lng,
       );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Appointment booked successfully!'),
-            backgroundColor: Colors.green,
+      if (!mounted) return;
+      HapticFeedback.mediumImpact();
+      Navigator.of(context).pushReplacement(
+        AppPageRoute(
+          builder: (_) => BookingConfirmedScreen(
+            doctor: widget.doctor,
+            result: result,
+            when: _when!,
+            visit: _visit,
           ),
-        );
-        Navigator.pop(context);
-      }
+        ),
+      );
     } catch (e) {
-      if (mounted) {
-        _showError('Failed to book: $e');
+      if (!mounted) return;
+      final message = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+      setState(() => _error = message);
+      // The slot may have just been taken: show the day as it is now.
+      if (message.toLowerCase().contains('slot') ||
+          message.toLowerCase().contains('taken')) {
+        setState(() => _reload++);
       }
+    } finally {
+      if (mounted) setState(() => _booking = false);
     }
-
-    if (mounted) {
-      setState(() => _isBooking = false);
-    }
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final dateOptions = _generateDateOptions();
-
-    return Scaffold(
-      backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: AppConstants.primaryColor,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text(
-          'Book Appointment',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 18),
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final d = widget.doctor;
+    return ModuleTheme(
+      accent: _accent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: AppTopBar(title: 'Book appointment', subtitle: d.name),
+        body: ListView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
           children: [
-            // Doctor Summary Card
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade100),
+            AppEntrance(
+              child: _DoctorStrip(doctor: d, accent: _accent),
+            ),
+            if (_visits.length > 1) ...[
+              const _Step('How would you like to consult?'),
+              AppEntrance(
+                index: 1,
+                child: Row(
+                  children: [
+                    for (final (i, v) in _visits.indexed) ...[
+                      if (i > 0) const SizedBox(width: 8),
+                      Expanded(
+                        child: _VisitCard(
+                          visit: v,
+                          fee: switch (v) {
+                            'video' => d.videoCallFee,
+                            'home' => d.homeVisitFee,
+                            _ => d.consultationFee,
+                          },
+                          selected: _visit == v,
+                          accent: _accent,
+                          onTap: () {
+                            if (_visit == v) return;
+                            setState(() {
+                              _visit = v;
+                              _when = null;
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      gradient: LinearGradient(
-                        colors: [AppConstants.primaryColor.withOpacity(0.1), AppConstants.primaryColor.withOpacity(0.2)],
-                      ),
-                    ),
-                    child: Center(
-                      child: Icon(
-                        Icons.person_outline_rounded,
-                        size: 24,
-                        color: AppConstants.primaryColor.withOpacity(0.6),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.doctor.name,
-                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B)),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          widget.doctor.specialty,
-                          style: TextStyle(color: AppConstants.primaryColor, fontWeight: FontWeight.w700, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // Consultation Type
-            const Text(
-              'Consultation Type',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B), letterSpacing: -0.2),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                _buildTypeCard(Icons.business, 'Clinic', 'clinic', 
-                    '₹${widget.doctor.consultationFee}', Colors.blue),
-                const SizedBox(width: 10),
-                _buildTypeCard(Icons.videocam, 'Video', 'video',
-                    '₹${widget.doctor.videoCallFee > 0 ? widget.doctor.videoCallFee : widget.doctor.consultationFee}', Colors.purple),
-                const SizedBox(width: 10),
-                _buildTypeCard(Icons.home, 'Home', 'home',
-                    '₹${widget.doctor.homeVisitFee > 0 ? widget.doctor.homeVisitFee : widget.doctor.consultationFee}', Colors.orange),
-              ],
-            ),
-
-            const SizedBox(height: 28),
-
-            // Select Date
-            const Text(
-              'Select Date',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B), letterSpacing: -0.2),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 85,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: dateOptions.length,
-                itemBuilder: (context, index) {
-                  final date = dateOptions[index];
-                  final isSelected = _selectedDate != null && 
-                      DateFormat('yyyy-MM-dd').format(date) == DateFormat('yyyy-MM-dd').format(_selectedDate!);
-                  return GestureDetector(
-                    onTap: () {
-                      setState(() => _selectedDate = date);
-                      _fetchSlots();
-                    },
-                    child: Container(
-                      width: 60,
-                      margin: const EdgeInsets.only(right: 10),
-                      decoration: BoxDecoration(
-                        color: isSelected ? AppConstants.primaryColor : Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: isSelected ? AppConstants.primaryColor : Colors.grey.shade200,
-                        ),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            DateFormat('EEE').format(date).toUpperCase(),
-                            style: TextStyle(
-                              fontSize: 9,
-                              color: isSelected ? Colors.white70 : Colors.grey[500],
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            DateFormat('dd').format(date),
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w900,
-                              color: isSelected ? Colors.white : const Color(0xFF1E293B),
-                            ),
-                          ),
-                          Text(
-                            DateFormat('MMM').format(date),
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              color: isSelected ? Colors.white70 : Colors.grey[500],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
+            ],
+            const _Step('Pick a day and time'),
+            AppEntrance(
+              index: 2,
+              child: SlotPicker(
+                key: ValueKey('$_visit-$_reload'),
+                professionalId: d.id,
+                professionalType: d.professionalType,
+                visit: _visit,
+                onChanged: (at) {
+                  if (_when == at) return;
+                  // Reported during the picker's own build: defer.
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted)
+                      setState(() {
+                        _when = at;
+                        if (at != null) _error = null;
+                      });
+                  });
                 },
               ),
             ),
-
-            const SizedBox(height: 28),
-
-            // Time Slots
-            const Text(
-              'Available Slots',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B), letterSpacing: -0.2),
-            ),
-            const SizedBox(height: 12),
-            
-            if (_selectedDate == null)
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.grey[50],
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Center(
-                  child: Text(
-                    'Please select a date first',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 14),
-                  ),
-                ),
-              )
-            else if (_loadingSlots)
-              const Center(child: Padding(
-                padding: EdgeInsets.all(24),
-                child: CircularProgressIndicator(),
-              ))
-            else if (_availableSlots.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Colors.orange[50],
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.orange[200]!),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: Colors.orange[700]),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'No available slots for this date. Try another date or consultation type.',
-                        style: TextStyle(fontSize: 13),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: _availableSlots.map((slot) {
-                  final isSelected = _selectedSlot == slot;
-                  final start = slot['startTime'] ?? '';
-                  final end = slot['endTime'] ?? '';
-                  return GestureDetector(
-                    onTap: () => setState(() => _selectedSlot = slot),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: isSelected ? AppConstants.primaryColor : Colors.white,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: isSelected ? AppConstants.primaryColor : Colors.grey[300]!,
-                        ),
-                      ),
-                      child: Text(
-                        '$start - $end',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: isSelected ? Colors.white : const Color(0xFF1E293B),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-
-            const SizedBox(height: 28),
-
-            // ─────── HOME VISIT LOCATION SECTION ───────
-            if (_selectedType == 'home') ...[
-              const Text(
-                'Visit Location',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B), letterSpacing: -0.2),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'We need your location so the doctor can visit you at home.',
-                style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-              ),
-              const SizedBox(height: 14),
-
-              // Get Location Button
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _isFetchingLocation ? null : _fetchCurrentLocation,
-                      icon: _isFetchingLocation
-                          ? const SizedBox(
-                              width: 16, height: 16,
-                              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                            )
-                          : const Icon(Icons.my_location, size: 18),
-                      label: Text(
-                        _isFetchingLocation ? 'Fetching...' : 'Use Current Location',
-                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppConstants.primaryColor,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.only(left: 12, right: 8, top: 12, bottom: 12),
-                        alignment: Alignment.centerLeft,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        elevation: 0,
-                      ),
-                    ),
-                  ),
-                  if (_latitude == null) ...[
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          setState(() {
-                            _locationError = null;
-                            _latitude = 0;
-                            _longitude = 0;
-                          });
-                        },
-                        icon: const Icon(Icons.edit_location_alt_outlined, size: 18),
-                        label: const Text(
-                          'Enter Manually',
-                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.grey[700],
-                          padding: const EdgeInsets.only(left: 12, right: 8, top: 12, bottom: 12),
-                          alignment: Alignment.centerLeft,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          side: BorderSide(color: Colors.grey[300]!),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-
-              // Location Error
-              if (_locationError != null) ...[
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.red[50],
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.red[200]!),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.error_outline, size: 18, color: Colors.red[700]),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _locationError!,
-                          style: TextStyle(fontSize: 12, color: Colors.red[700]),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-
-              // Location Captured — Address Input
-              if (_latitude != null) ...[
-                const SizedBox(height: 14),
-                Container(
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: AppConstants.primaryColor.withOpacity(0.04),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: AppConstants.primaryColor.withOpacity(0.15)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Location status indicator
-                      if (_latitude != 0 && _longitude != 0)
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: Colors.green[50],
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(Icons.check, size: 14, color: Colors.green[700]),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    'Location captured',
-                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.green[700]),
-                                  ),
-                                  Text(
-                                    '${_latitude!.toStringAsFixed(5)}, ${_longitude!.toStringAsFixed(5)}',
-                                    style: TextStyle(fontSize: 10, color: Colors.grey[500]),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            // Re-fetch button
-                            GestureDetector(
-                              onTap: _fetchCurrentLocation,
-                              child: Container(
-                                padding: const EdgeInsets.all(6),
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[100],
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Icon(Icons.refresh, size: 16, color: Colors.grey[600]),
-                              ),
-                            ),
-                          ],
-                        ),
-
-                      if (_latitude != 0 && _longitude != 0) const SizedBox(height: 14),
-
-                      // Address text field
-                      const Text(
-                        'Detailed Address *',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF1E293B)),
-                      ),
-                      const SizedBox(height: 8),
-                      TextFormField(
-                        controller: _addressController,
-                        maxLines: 3,
-                        style: const TextStyle(fontSize: 13),
-                        decoration: InputDecoration(
-                          hintText: 'House no., Street, Area, Landmark...',
-                          hintStyle: TextStyle(color: Colors.grey[400], fontSize: 13),
-                          filled: true,
-                          fillColor: Colors.white,
-                          contentPadding: const EdgeInsets.all(12),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: Colors.grey[300]!),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: Colors.grey[300]!),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide(color: AppConstants.primaryColor, width: 2),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        'Please verify/edit the address for accurate home visit.',
-                        style: TextStyle(fontSize: 10, color: Colors.grey[500]),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-
-              const SizedBox(height: 28),
+            if (_visit == 'home') ...[
+              const _Step('Where should they come?'),
+              _HomeAddress(house: _house, accent: _accent),
             ],
-
-            // Symptoms
-            const Text(
-              'Describe Your Symptoms *',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B), letterSpacing: -0.2),
+            const _Step('What’s it about?', optional: true),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final s in _commonSymptoms)
+                  AppFilterChip(
+                    label: s,
+                    selected: _symptoms.contains(s),
+                    onTap: () => setState(
+                      () => _symptoms.contains(s)
+                          ? _symptoms.remove(s)
+                          : _symptoms.add(s),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(height: 12),
-            TextFormField(
-              controller: _symptomsController,
+            AppTextField(
+              label: '',
+              hint:
+                  'Anything the ${d.isPhysio ? 'physio' : 'doctor'} should know before you meet',
+              controller: _reason,
               maxLines: 3,
-              decoration: InputDecoration(
-                hintText: 'E.g. Headache, Fever, Back pain...',
-                hintStyle: TextStyle(color: Colors.grey[400], fontSize: 13),
-                filled: true,
-                fillColor: Colors.grey[50],
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey[300]!),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey[300]!),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: AppConstants.primaryColor, width: 2),
-                ),
-              ),
+              textCapitalization: TextCapitalization.sentences,
+              margin: EdgeInsets.zero,
             ),
-
-            const SizedBox(height: 20),
-
-            // Additional Notes (Optional)
-            const Text(
-              'Additional Notes (Optional)',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B), letterSpacing: -0.2),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _notesController,
-              maxLines: 2,
-              decoration: InputDecoration(
-                hintText: 'Any additional information...',
-                hintStyle: TextStyle(color: Colors.grey[400], fontSize: 13),
-                filled: true,
-                fillColor: Colors.grey[50],
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey[300]!),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: Colors.grey[300]!),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide(color: AppConstants.primaryColor, width: 2),
-                ),
+            if (_error != null) ...[
+              const SizedBox(height: 14),
+              AuthNote.error(
+                _error!,
+                onClose: () => setState(() => _error = null),
               ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // Fee Summary
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppConstants.primaryColor.withOpacity(0.05),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppConstants.primaryColor.withOpacity(0.1)),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Consultation Fee', style: TextStyle(fontSize: 13, color: Color(0xFF64748B), fontWeight: FontWeight.w500)),
-                      Text('₹${_getConsultationFee()}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                    ],
-                  ),
-                  const Divider(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Total Amount', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: Color(0xFF1E293B))),
-                      Text(
-                        '₹${_getConsultationFee()}',
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                          color: AppConstants.primaryColor,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // Book Button
-            SizedBox(
-              width: double.infinity,
-              height: 56,
-              child: ElevatedButton(
-                onPressed: _isBooking ? null : _bookAppointment,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppConstants.primaryColor,
-                  disabledBackgroundColor: AppConstants.primaryColor.withOpacity(0.5),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  elevation: 0,
-                ),
-                child: _isBooking
-                    ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                      )
-                    : const Text(
-                        'Confirm Booking',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
+            ],
           ],
+        ),
+        bottomNavigationBar: _ConfirmBar(
+          when: _when,
+          fee: _fee,
+          busy: _booking,
+          accent: _accent,
+          onConfirm: _book,
         ),
       ),
     );
   }
+}
 
-  Widget _buildTypeCard(IconData icon, String label, String type, String fee, Color color) {
-    final isSelected = _selectedType == type;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () {
-          setState(() {
-            _selectedType = type;
-            _selectedSlot = null;
-          });
-          if (_selectedDate != null) _fetchSlots();
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+class _Step extends StatelessWidget {
+  final String text;
+  final bool optional;
+  const _Step(this.text, {this.optional = false});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 22, bottom: 10),
+    child: Row(
+      children: [
+        Text(
+          text,
+          style: AppType.sans(
+            fontSize: AppType.title + 1,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.3,
+            color: AppColors.textStrong,
+          ),
+        ),
+        if (optional) ...[
+          const SizedBox(width: 6),
+          Text(
+            'Optional',
+            style: AppType.sans(
+              fontSize: AppType.caption,
+              color: AppColors.textTertiary,
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+class _DoctorStrip extends StatelessWidget {
+  final Doctor doctor;
+  final ModuleAccent accent;
+  const _DoctorStrip({required this.doctor, required this.accent});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: accent.veryLight,
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Row(
+      children: [
+        AppAvatar(
+          name: doctor.name,
+          imageUrl: doctor.imageUrl,
+          size: 46,
+          radius: 14,
+          color: accent.color,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                doctor.name,
+                style: AppType.sans(
+                  fontSize: AppType.body + 1,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textStrong,
+                ),
+              ),
+              Text(
+                [
+                  doctor.specialty,
+                  if (doctor.clinicName.isNotEmpty) doctor.clinicName,
+                ].join(' · '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppType.sans(
+                  fontSize: AppType.small,
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _VisitCard extends StatelessWidget {
+  final String visit;
+  final double fee;
+  final bool selected;
+  final ModuleAccent accent;
+  final VoidCallback onTap;
+  const _VisitCard({
+    required this.visit,
+    required this.fee,
+    required this.selected,
+    required this.accent,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, label) = switch (visit) {
+      'video' => (LucideIcons.video, 'Video call'),
+      'home' => (LucideIcons.house, 'Home visit'),
+      _ => (LucideIcons.building2, 'Clinic'),
+    };
+    return Semantics(
+      selected: selected,
+      button: true,
+      child: AppPressable(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: AppMotion.fast,
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
           decoration: BoxDecoration(
-            color: isSelected ? color.withOpacity(0.1) : Colors.white,
-            borderRadius: BorderRadius.circular(14),
+            color: selected ? accent.veryLight : Colors.white,
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: isSelected ? color : Colors.grey[300]!,
-              width: isSelected ? 2 : 1,
+              color: selected ? accent.color : AppColors.borderStrong,
+              width: selected ? 1.5 : 1,
             ),
           ),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, color: isSelected ? color : Colors.grey[500], size: 28),
-              const SizedBox(height: 8),
+              Icon(
+                icon,
+                size: 20,
+                color: selected ? accent.color : AppColors.textSecondary,
+              ),
+              const SizedBox(height: 10),
               Text(
                 label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: isSelected ? color : Colors.grey[700],
+                style: AppType.sans(
+                  fontSize: AppType.body,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textStrong,
                 ),
               ),
-              const SizedBox(height: 4),
               Text(
-                fee,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: isSelected ? color : Colors.grey[500],
-                  fontWeight: FontWeight.w700,
+                fee > 0 ? appRupees(fee) : 'Free',
+                style: AppType.sans(
+                  fontSize: AppType.small,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? accent.color : AppColors.textSecondary,
                 ),
               ),
             ],
@@ -869,4 +412,167 @@ class _BookAppointmentScreenState extends State<BookAppointmentScreen> {
       ),
     );
   }
+}
+
+class _HomeAddress extends StatelessWidget {
+  final TextEditingController house;
+  final ModuleAccent accent;
+  const _HomeAddress({required this.house, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final location = context.watch<LocationProvider>();
+    return Column(
+      children: [
+        AppPressable(
+          onTap: () => context.read<LocationProvider>().locate(ask: true),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: location.hasPosition
+                    ? accent.color
+                    : AppColors.borderStrong,
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: accent.veryLight,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: location.locating
+                      ? Padding(
+                          padding: const EdgeInsets.all(11),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: accent.color,
+                          ),
+                        )
+                      : Icon(
+                          LucideIcons.locateFixed,
+                          size: 19,
+                          color: accent.color,
+                        ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        location.hasPosition
+                            ? (location.label ?? 'Current location')
+                            : 'Use my current location',
+                        style: AppType.sans(
+                          fontSize: AppType.body,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textStrong,
+                        ),
+                      ),
+                      Text(
+                        location.hasPosition
+                            ? 'Location shared · tap to refresh'
+                            : location.problem ?? 'So they can find your home',
+                        style: AppType.sans(
+                          fontSize: AppType.caption,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (location.hasPosition)
+                  Icon(LucideIcons.circleCheck, size: 20, color: accent.color),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        AppTextField(
+          label: '',
+          hint: 'House / flat number, building, landmark',
+          controller: house,
+          icon: LucideIcons.house,
+          textCapitalization: TextCapitalization.words,
+          margin: EdgeInsets.zero,
+        ),
+      ],
+    );
+  }
+}
+
+class _ConfirmBar extends StatelessWidget {
+  final DateTime? when;
+  final double fee;
+  final bool busy;
+  final ModuleAccent accent;
+  final VoidCallback onConfirm;
+  const _ConfirmBar({
+    required this.when,
+    required this.fee,
+    required this.busy,
+    required this.accent,
+    required this.onConfirm,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: const BoxDecoration(
+      color: Colors.white,
+      border: Border(top: BorderSide(color: AppColors.border)),
+    ),
+    child: SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    when == null
+                        ? 'No time chosen'
+                        : DateFormat('EEE, d MMM · h:mm a').format(when!),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppType.sans(
+                      fontSize: AppType.small,
+                      fontWeight: FontWeight.w600,
+                      color: when == null
+                          ? AppColors.textTertiary
+                          : AppColors.textSecondary,
+                    ),
+                  ),
+                  Text(
+                    fee > 0 ? appRupees(fee) : 'Free',
+                    style: AppType.sans(
+                      fontSize: AppType.figure,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.textStrong,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              width: 170,
+              child: AppButton(
+                label: 'Confirm booking',
+                loading: busy,
+                onPressed: when == null ? null : onConfirm,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

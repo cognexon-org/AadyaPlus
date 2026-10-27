@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Allows plain HTTP only to the app's own backend (AppConstants.
+  defaultApiBaseUrl) and local development hosts. Android blocks cleartext
+  by default, so without this a release build can't reach the API at all.
+  Move the backend to an HTTPS domain and drop the IP entry.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">16.176.130.55</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

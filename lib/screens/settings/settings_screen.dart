@@ -1,283 +1,200 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
-import 'package:aadya_plus/providers/auth_provider.dart';
-import 'package:aadya_plus/utils/constants.dart';
 
-class SettingsScreen extends StatefulWidget {
+import '../../core/ui/app_ui.dart';
+import '../../features/onboarding/onboarding_widgets.dart' show AuthNote;
+import '../../providers/auth_provider.dart';
+import '../profile/addresses_screen.dart';
+
+/// Settings that are saved to the account: which channels we may reach you
+/// on, your password, your addresses.
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
-  @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  bool _pushNotifications = true;
-  bool _emailNotifications = true;
-  bool _smsNotifications = false;
-  bool _darkMode = false;
+  Future<void> _toggle(BuildContext context, String channel, bool value) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await context.read<AuthProvider>().updateNotificationChannels({channel: value});
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.toString().replaceFirst(RegExp(r'^\w*Exception:\s*'), '')), backgroundColor: AppColors.error));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final user = context.watch<AuthProvider>().user;
     return Scaffold(
-      appBar: AppBar(
-        surfaceTintColor: Colors.white,
-        title: const Text(
-          'Settings',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-      ),
-      body: Container(
-        color: Colors.white,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            // Account Section
-            _buildSectionHeader('Account'),
-            _buildTile(
-              icon: Icons.person_outline,
-              title: 'Edit Profile',
-              subtitle: 'Update your personal details',
-              onTap: () {},
-            ),
-            _buildTile(
-              icon: Icons.lock_outline,
-              title: 'Change Password',
-              subtitle: 'Update your password',
-              onTap: () {},
-            ),
-            _buildTile(
-              icon: Icons.location_on_outlined,
-              title: 'Manage Addresses',
-              subtitle: 'Add or edit your delivery addresses',
-              onTap: () {},
-            ),
-            const SizedBox(height: 24),
-
-            // Notifications Section
-            _buildSectionHeader('Notifications'),
-            _buildSwitchTile(
-              icon: Icons.notifications_active_outlined,
-              title: 'Push Notifications',
-              subtitle: 'Receive push notifications',
-              value: _pushNotifications,
-              onChanged: (val) =>
-                  setState(() => _pushNotifications = val),
-            ),
-            _buildSwitchTile(
-              icon: Icons.email_outlined,
-              title: 'Email Notifications',
-              subtitle: 'Receive email updates',
-              value: _emailNotifications,
-              onChanged: (val) =>
-                  setState(() => _emailNotifications = val),
-            ),
-            _buildSwitchTile(
-              icon: Icons.sms_outlined,
-              title: 'SMS Notifications',
-              subtitle: 'Receive SMS alerts',
-              value: _smsNotifications,
-              onChanged: (val) =>
-                  setState(() => _smsNotifications = val),
-            ),
-            const SizedBox(height: 24),
-
-            // App Preferences
-            _buildSectionHeader('App Preferences'),
-            _buildTile(
-              icon: Icons.language,
-              title: 'Language',
-              subtitle: 'English',
-              trailing: Icon(Icons.chevron_right, color: Colors.grey[400]),
-              onTap: () {},
-            ),
-            _buildSwitchTile(
-              icon: Icons.dark_mode_outlined,
-              title: 'Dark Mode',
-              subtitle: 'Switch to dark theme',
-              value: _darkMode,
-              onChanged: (val) => setState(() => _darkMode = val),
-            ),
-            const SizedBox(height: 24),
-
-            // Other Section
-            _buildSectionHeader('Other'),
-            _buildTile(
-              icon: Icons.privacy_tip_outlined,
-              title: 'Privacy Policy',
-              onTap: () {},
-            ),
-            _buildTile(
-              icon: Icons.description_outlined,
-              title: 'Terms of Service',
-              onTap: () {},
-            ),
-            _buildTile(
-              icon: Icons.help_outline,
-              title: 'Help & Support',
-              onTap: () {},
-            ),
-            _buildTile(
-              icon: Icons.info_outline,
-              title: 'About',
-              subtitle: 'Version 1.0.0',
-              onTap: () {},
-            ),
-            const SizedBox(height: 24),
-
-            // Logout
-            Container(
-              margin: const EdgeInsets.only(bottom: 20),
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  showDialog(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      title: const Text('Logout'),
-                      content: const Text('Are you sure you want to logout?'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('Cancel'),
-                        ),
-                        TextButton(
-                          onPressed: () async {
-                            Navigator.pop(context);
-                            await Provider.of<AuthProvider>(context, listen: false)
-                                .logout();
-                            if (!context.mounted) return;
-                            Navigator.of(context).popUntil((route) => route.isFirst);
-                          },
-                          child: const Text(
-                            'Logout',
-                            style: TextStyle(color: Colors.red),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.logout, color: Colors.red),
-                label: const Text(
-                  'Logout',
-                  style: TextStyle(color: Colors.red),
+      backgroundColor: AppColors.bg,
+      appBar: const AppTopBar(title: 'Settings'),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+        children: [
+          const _Head('Notifications'),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.borderStrong)),
+            child: Column(
+              children: [
+                AppSwitchRow(
+                  label: 'App notifications',
+                  subtitle: 'Booking updates, reports, order tracking',
+                  icon: LucideIcons.bell,
+                  value: user?.notifies('push') ?? true,
+                  onChanged: (v) => _toggle(context, 'push', v),
                 ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.red),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                AppSwitchRow(
+                  label: 'SMS',
+                  subtitle: 'Reminders and codes by text',
+                  icon: LucideIcons.messageSquareText,
+                  value: user?.notifies('sms') ?? true,
+                  onChanged: (v) => _toggle(context, 'sms', v),
+                ),
+                AppSwitchRow(
+                  label: 'Email',
+                  subtitle: 'Receipts and summaries',
+                  icon: LucideIcons.mail,
+                  value: user?.notifies('email') ?? true,
+                  onChanged: (v) => _toggle(context, 'email', v),
+                ),
+              ],
+            ),
+          ),
+          const _Head('Account'),
+          Container(
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.borderStrong)),
+            child: Column(
+              children: [
+                _Row(
+                  icon: LucideIcons.lockKeyhole,
+                  title: 'Change password',
+                  onTap: () => showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    showDragHandle: true,
+                    builder: (_) => const _PasswordSheet(),
                   ),
                 ),
-              ),
+                const Divider(height: 1, indent: 56),
+                _Row(
+                  icon: LucideIcons.mapPin,
+                  title: 'Saved addresses',
+                  onTap: () => Navigator.of(context).push(AppPageRoute(builder: (_) => const AddressesScreen())),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 22),
+          Text(
+            'Signed in as ${user?.email.isNotEmpty == true ? user!.email : '+91 ${user?.phone ?? ''}'}',
+            textAlign: TextAlign.center,
+            style: AppType.sans(fontSize: AppType.caption, color: AppColors.textTertiary),
+          ),
+        ],
       ),
     );
+  }
+}
+
+class _Head extends StatelessWidget {
+  final String text;
+  const _Head(this.text);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(4, 18, 4, 8),
+    child: Text(text, style: AppType.sans(fontSize: AppType.small, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+  );
+}
+
+class _Row extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final VoidCallback onTap;
+  const _Row({required this.icon, required this.title, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    onTap: onTap,
+    leading: Icon(icon, size: 20, color: AppColors.brand),
+    title: Text(title, style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w600, color: AppColors.textStrong)),
+    trailing: const Icon(LucideIcons.chevronRight, size: 18, color: AppColors.textTertiary),
+  );
+}
+
+class _PasswordSheet extends StatefulWidget {
+  const _PasswordSheet();
+
+  @override
+  State<_PasswordSheet> createState() => _PasswordSheetState();
+}
+
+class _PasswordSheetState extends State<_PasswordSheet> {
+  final _current = TextEditingController();
+  final _next = TextEditingController();
+  bool _hide = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _current.dispose();
+    _next.dispose();
+    super.dispose();
   }
 
-  Widget _buildSectionHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Text(
-        title,
-        style: const TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-    );
+  Future<void> _save() async {
+    if (_current.text.isEmpty) return setState(() => _error = 'Enter your current password');
+    if (_next.text.length < 6) return setState(() => _error = 'Use at least 6 characters');
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await context.read<AuthProvider>().changePassword(_current.text, _next.text);
+      if (!mounted) return;
+      Navigator.pop(context);
+      messenger.showSnackBar(const SnackBar(content: Text('Password changed')));
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = e.toString().replaceFirst(RegExp(r'^\w*Exception:\s*'), '');
+        });
+      }
+    }
   }
 
-  Widget _buildTile({
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    Widget? trailing,
-    required VoidCallback onTap,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey[200]!),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: ListTile(
-        onTap: onTap,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppConstants.primaryColor.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + MediaQuery.of(context).viewInsets.bottom),
+    child: SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Change password', style: AppType.sans(fontSize: AppType.heading + 1, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+          const SizedBox(height: 14),
+          AppTextField(label: '', hint: 'Current password', controller: _current, icon: LucideIcons.lockKeyhole, obscureText: _hide, margin: const EdgeInsets.only(bottom: 10)),
+          AppTextField(
+            label: '',
+            hint: 'New password',
+            controller: _next,
+            icon: LucideIcons.keyRound,
+            obscureText: _hide,
+            margin: EdgeInsets.zero,
+            trailing: IconButton(
+              tooltip: _hide ? 'Show' : 'Hide',
+              onPressed: () => setState(() => _hide = !_hide),
+              icon: Icon(_hide ? LucideIcons.eye : LucideIcons.eyeOff, size: 18, color: AppColors.textTertiary),
+            ),
           ),
-          child: Icon(icon, color: AppConstants.primaryColor, size: 22),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.w500,
-            fontSize: 14,
-          ),
-        ),
-        subtitle: subtitle != null
-            ? Text(
-                subtitle,
-                style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-              )
-            : null,
-        trailing:
-            trailing ?? Icon(Icons.chevron_right, color: Colors.grey[400]),
+          if (_error != null) ...[const SizedBox(height: 10), AuthNote.error(_error!)],
+          const SizedBox(height: 16),
+          AppButton(label: 'Change password', loading: _busy, onPressed: _save),
+        ],
       ),
-    );
-  }
-
-  Widget _buildSwitchTile({
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.grey[200]!),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: ListTile(
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppConstants.primaryColor.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(icon, color: AppConstants.primaryColor, size: 22),
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontWeight: FontWeight.w500,
-            fontSize: 14,
-          ),
-        ),
-        subtitle: subtitle != null
-            ? Text(
-                subtitle,
-                style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-              )
-            : null,
-        trailing: Switch(
-          value: value,
-          onChanged: onChanged,
-          activeColor: AppConstants.primaryColor,
-        ),
-      ),
-    );
-  }
+    ),
+  );
 }

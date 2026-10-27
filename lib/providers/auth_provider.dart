@@ -12,12 +12,18 @@ class AuthProvider with ChangeNotifier {
   User? _user;
   String? _token;
   bool _isLoading = false;
+  bool _isRestoring = true;
   bool _isAuthenticated = false;
   String? _error;
 
   User? get user => _user;
   String? get token => _token;
   bool get isLoading => _isLoading;
+
+  /// True only while the saved session is first read at launch. The app
+  /// shows its splash for this — not for sign-in, which used to swap the
+  /// login screen for a spinner and lose its error message.
+  bool get isRestoring => _isRestoring;
   bool get isAuthenticated => _isAuthenticated;
   bool get needsProfileCompletion =>
       _isAuthenticated && _user?.profileCompleted != true;
@@ -27,7 +33,6 @@ class AuthProvider with ChangeNotifier {
     http.setUnauthorizedHandler(_handleUnauthorized);
     _loadUserData();
   }
-
 
   Future<void> _handleUnauthorized() async {
     if (!_isAuthenticated && _token == null) return;
@@ -66,10 +71,24 @@ class AuthProvider with ChangeNotifier {
         }
       }
 
-      await refreshCurrentUser(clearOnUnauthorized: true);
+      if (_isAuthenticated) {
+        // A cached account opens straight away; the server check runs in
+        // the background so a slow network never holds the app on launch.
+        _finishRestoring();
+        refreshCurrentUser(clearOnUnauthorized: true);
+      } else {
+        await refreshCurrentUser(clearOnUnauthorized: true);
+      }
     } finally {
       _setLoading(false);
+      _finishRestoring();
     }
+  }
+
+  void _finishRestoring() {
+    if (!_isRestoring) return;
+    _isRestoring = false;
+    notifyListeners();
   }
 
   Future<void> refreshCurrentUser({bool clearOnUnauthorized = true}) async {
@@ -155,8 +174,9 @@ class AuthProvider with ChangeNotifier {
     String name,
     String email,
     String password,
-    String phone,
-  ) async {
+    String phone, {
+    String? verificationToken,
+  }) async {
     _setLoading(true);
     _error = null;
 
@@ -173,6 +193,7 @@ class AuthProvider with ChangeNotifier {
           'password': password,
           'phone': phone,
           'role': 'patient',
+          'verificationToken': ?verificationToken,
         }),
       );
 
@@ -200,6 +221,67 @@ class AuthProvider with ChangeNotifier {
       rethrow;
     } finally {
       _setLoading(false);
+    }
+  }
+
+  /// Texts a one-time code to [phone]. The reply says whether the number
+  /// belongs to an account (sign in) or is new (sign up).
+  Future<OtpChallenge> sendOtp(String phone) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.baseUrl}/auth/otp/send'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'phone': phone}),
+    );
+    final data = _decodeObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'Couldn’t send the code');
+    }
+    return OtpChallenge(
+      phone: (data['phone'] ?? phone).toString(),
+      isNewAccount: data['purpose'] == 'signup',
+      resendAfter: Duration(
+        seconds: (data['resendAfterSeconds'] as num?)?.toInt() ?? 30,
+      ),
+    );
+  }
+
+  /// Checks the code. Signs an existing patient straight in and returns
+  /// null; for a new number returns the single-use token that [register]
+  /// redeems to create the account with that verified phone.
+  Future<String?> verifyOtp(String phone, String code) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.baseUrl}/auth/otp/verify'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'phone': phone, 'code': code}),
+    );
+    final data = _decodeObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'That code didn’t work');
+    }
+    if (data['registered'] == false) {
+      return data['verificationToken']?.toString();
+    }
+    final token = data['token']?.toString();
+    if (token == null || token.isEmpty) {
+      throw Exception('Sign-in response did not include a token');
+    }
+    final parsedUser = User.fromJson(Map<String, dynamic>.from(data['user'] ?? {}));
+    _ensurePatientRole(parsedUser);
+    await _persistSession(token, parsedUser);
+    return null;
+  }
+
+  /// Emails a reset link. The server answers the same whether or not the
+  /// address has an account.
+  Future<void> forgotPassword(String email) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.baseUrl}/auth/forgot-password'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'email': email}),
+    );
+    final data = _decodeObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'Couldn’t send the reset link');
     }
   }
 
@@ -273,44 +355,79 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
-  Future<void> updateProfile(User updatedUser) async {
-    _setLoading(true);
-    _error = null;
+  /// Renames the account (the phone is the sign-in identity and changes
+  /// only through a new OTP; the email is fixed once verified).
+  Future<void> updateName(String name) async {
+    final response = await http.put(
+      Uri.parse('${AppConstants.baseUrl}/auth/profile'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'name': name.trim()}),
+    );
+    final data = _decodeObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'Couldn’t update your name');
+    }
+    await _saveUser(_user!.copyWith(name: name.trim()));
+  }
 
+  Future<void> changePassword(String current, String next) async {
+    final response = await http.put(
+      Uri.parse('${AppConstants.baseUrl}/auth/change-password'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'currentPassword': current, 'newPassword': next}),
+    );
+    final data = _decodeObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'Couldn’t change your password');
+    }
+    // A password change issues a new token on some servers; keep the session.
+    final token = data['token']?.toString();
+    if (token != null && token.isNotEmpty) {
+      _token = token;
+      await SecureStorageService.instance.writeToken(token);
+    }
+  }
+
+  /// Saves which channels the patient wants to hear on.
+  Future<void> updateNotificationChannels(Map<String, bool> channels) async {
+    final before = _user;
+    final merged = {
+      ...?(_user?.preferences),
+      'notifications': {
+        ...?(_user?.preferences['notifications'] as Map?),
+        ...channels,
+      },
+    };
+    if (_user != null) await _saveUser(_user!.copyWith(preferences: merged));
     try {
       final response = await http.put(
-        Uri.parse('${AppConstants.baseUrl}/auth/profile'),
+        Uri.parse('${AppConstants.baseUrl}/auth/preferences'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'name': updatedUser.name,
-          'phone': updatedUser.phone,
-        }),
+        body: json.encode({'notifications': channels}),
       );
-
-      final responseData = _decodeObject(response.body);
-
-      if (response.statusCode == 200 && responseData['success'] == true) {
-        _user = updatedUser.copyWith(
-          role: _user?.role ?? 'patient',
-          isVerified: _user?.isVerified ?? false,
-          profileCompleted: _user?.profileCompleted ?? false,
-          profileId: _user?.profileId,
-        );
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(AppConstants.userKey, json.encode(_user!.toJson()));
-      } else {
-        throw Exception(
-          responseData['error'] ??
-              responseData['message'] ??
-              'Failed to update profile',
-        );
+      final data = _decodeObject(response.body);
+      if (response.statusCode != 200 || data['success'] != true) {
+        throw Exception(data['error'] ?? 'Couldn’t save that setting');
       }
-    } catch (error) {
-      _error = _cleanError(error);
+    } catch (e) {
+      if (before != null) await _saveUser(before);
       rethrow;
-    } finally {
-      _setLoading(false);
     }
+  }
+
+  Future<void> _saveUser(User user) async {
+    _user = user;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(AppConstants.userKey, json.encode(user.toJson()));
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void debugSignIn(User user) {
+    _user = user;
+    _isAuthenticated = true;
+    _isRestoring = false;
+    notifyListeners();
   }
 
   Future<void> _persistSession(String token, User user) async {
@@ -364,4 +481,16 @@ class AuthProvider with ChangeNotifier {
     _isLoading = value;
     notifyListeners();
   }
+}
+
+/// A code sent by [AuthProvider.sendOtp].
+class OtpChallenge {
+  final String phone;
+  final bool isNewAccount;
+  final Duration resendAfter;
+  const OtpChallenge({
+    required this.phone,
+    required this.isNewAccount,
+    required this.resendAfter,
+  });
 }

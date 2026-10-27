@@ -21,6 +21,26 @@ class PatientRecordsService {
   PatientRecordsService._();
   static final PatientRecordsService instance = PatientRecordsService._();
 
+  /// The patient's health profile: blood group, height, weight, emergency
+  /// contact and the rest.
+  Future<Map<String, dynamic>> profile() async {
+    final response = await http.get(http.apiUri('/patient/profile'));
+    final data = _decode(response.body);
+    _assertSuccess(response.statusCode, data);
+    return Map<String, dynamic>.from(data['profile'] ?? const {});
+  }
+
+  Future<Map<String, dynamic>> updateProfile(Map<String, dynamic> changes) async {
+    final response = await http.put(
+      http.apiUri('/patient/profile'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(changes),
+    );
+    final data = _decode(response.body);
+    _assertSuccess(response.statusCode, data);
+    return Map<String, dynamic>.from(data['profile'] ?? const {});
+  }
+
   Future<PatientRecordsBundle> load() async {
     final responses = await Future.wait([
       http.get(http.apiUri('/patient/medical-history')),

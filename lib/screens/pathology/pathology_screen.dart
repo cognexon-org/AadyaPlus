@@ -1,17 +1,28 @@
-import 'package:aadya_plus/providers/lab_test_provider.dart';
-import 'package:aadya_plus/screens/lab_tests/lab_test_screen.dart';
-import 'package:aadya_plus/screens/pathology/diagnostic_order_details_screen.dart';
-import 'package:aadya_plus/utils/constants.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/ui/app_ui.dart';
+import '../../core/utils/server_dates.dart';
+import '../../features/onboarding/auth_parts.dart' show MethodSwitch;
+import '../../providers/lab_test_provider.dart';
+import '../lab_tests/lab_test_screen.dart';
+import 'diagnostic_order_details_screen.dart';
+
+/// The patient's lab bookings: upcoming and in progress, and finished ones
+/// with their reports.
 class PathologyScreen extends StatefulWidget {
   const PathologyScreen({super.key});
+
   @override
   State<PathologyScreen> createState() => _PathologyScreenState();
 }
 
 class _PathologyScreenState extends State<PathologyScreen> {
+  int _tab = 0;
+  static const _done = ['completed', 'cancelled'];
+
   @override
   void initState() {
     super.initState();
@@ -21,57 +32,134 @@ class _PathologyScreenState extends State<PathologyScreen> {
   @override
   Widget build(BuildContext context) {
     final p = context.watch<LabTestProvider>();
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        backgroundColor: AppConstants.primaryColor,
-        foregroundColor: Colors.white,
-        title: const Text('My Diagnostics', style: TextStyle(fontWeight: FontWeight.w900)),
-        actions: [IconButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LabTestScreen())), icon: const Icon(Icons.add_circle_outline), tooltip: 'Book test')],
-      ),
-      body: RefreshIndicator(
-        onRefresh: p.loadOrders,
-        child: p.orders.isEmpty
-            ? ListView(children: [
-                const SizedBox(height: 100),
-                const Icon(Icons.biotech_outlined, size: 60, color: Colors.grey),
-                const SizedBox(height: 12),
-                const Center(child: Text('No diagnostic bookings yet.')),
-                Center(child: TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LabTestScreen())), child: const Text('Book a test or package'))),
-              ])
-            : ListView.builder(
-                padding: const EdgeInsets.all(14),
-                itemCount: p.orders.length,
-                itemBuilder: (context, index) {
-                  final o = p.orders[index];
-                  final lab = o['pathologyId'] is Map ? Map<String, dynamic>.from(o['pathologyId']) : <String, dynamic>{};
-                  final tests = _list(o['tests']);
-                  final packages = _list(o['packages']);
-                  final title = packages.isNotEmpty ? (packages.first['packageName'] ?? 'Diagnostic package').toString() : tests.isNotEmpty ? (tests.first['testName'] ?? 'Diagnostic test').toString() : 'Diagnostic order';
-                  final status = _label(o['status']);
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(14),
-                      leading: CircleAvatar(backgroundColor: Colors.purple.shade50, child: const Icon(Icons.science_outlined, color: Colors.purple)),
-                      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w900)),
-                      subtitle: Text('${lab['labName'] ?? 'Lab'}\n$status • ${_label(o['type'])}${o['type'] == 'home_collection' ? ' • ${_label(o['collectionStatus'])}' : ''}'),
-                      isThreeLine: true,
-                      trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                        Text('₹${_double(o['totalAmount']).toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.w900, color: AppConstants.primaryColor)),
-                        const Icon(Icons.chevron_right),
-                      ]),
-                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => DiagnosticOrderDetailsScreen(orderId: _id(o)))),
-                    ),
-                  );
-                },
+    final active = p.orders.where((o) => !_done.contains(o['status'])).toList();
+    final past = p.orders.where((o) => _done.contains(o['status'])).toList();
+    final list = _tab == 0 ? active : past;
+    return ModuleTheme(
+      accent: labAccent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: AppTopBar(
+          title: 'My lab tests',
+          actions: [
+            IconButton(
+              tooltip: 'Book tests',
+              icon: const Icon(LucideIcons.plus, size: 22),
+              onPressed: () => Navigator.of(context).push(AppPageRoute(builder: (_) => const LabTestScreen())),
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+              child: MethodSwitch(
+                labels: ['In progress${active.isEmpty ? '' : ' · ${active.length}'}', 'Completed'],
+                index: _tab,
+                onChanged: (i) => setState(() => _tab = i),
               ),
+            ),
+            Expanded(
+              child: RefreshIndicator(
+                color: labAccent.color,
+                onRefresh: () => p.loadOrders(),
+                child: list.isEmpty
+                    ? ListView(
+                        children: [
+                          AppEmptyState(
+                            illustration: Illustrations.labReport,
+                            title: _tab == 0 ? 'No tests booked' : 'No reports yet',
+                            message: _tab == 0 ? 'Book a test or health package — many labs collect samples at home.' : null,
+                            actionLabel: _tab == 0 ? 'Book a test' : null,
+                            onAction: _tab == 0 ? () => Navigator.of(context).push(AppPageRoute(builder: (_) => const LabTestScreen())) : null,
+                          ),
+                        ],
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                        itemCount: list.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 12),
+                        itemBuilder: (_, i) => AppEntrance(
+                          index: i.clamp(0, 6),
+                          child: LabOrderCard(order: list[i]),
+                        ),
+                      ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+}
 
-  static String _id(Map<String, dynamic> m) => (m['_id'] ?? m['id'] ?? '').toString();
-  static List<Map<String, dynamic>> _list(dynamic v) => v is List ? v.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList() : [];
-  static double _double(dynamic v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
-  static String _label(dynamic value) => value.toString().replaceAll('_', ' ').split(' ').map((e) => e.isEmpty ? e : '${e[0].toUpperCase()}${e.substring(1)}').join(' ');
+class LabOrderCard extends StatelessWidget {
+  final Map<String, dynamic> order;
+  const LabOrderCard({super.key, required this.order});
+
+  @override
+  Widget build(BuildContext context) {
+    final o = order;
+    final tests = mapsOf(o['tests']);
+    final packages = mapsOf(o['packages']);
+    final title = packages.isNotEmpty
+        ? (packages.first['packageName'] ?? 'Health package').toString()
+        : tests.isEmpty
+        ? 'Lab tests'
+        : tests.length == 1
+        ? (tests.first['testName'] ?? 'Lab test').toString()
+        : '${tests.first['testName'] ?? 'Test'} +${tests.length - 1}';
+    final day = serverDay(o['scheduledDate']);
+    final status = PatientStatus.of(o['status']?.toString());
+    final home = o['type'] == 'home_collection';
+    return AppPressable(
+      onTap: () => Navigator.of(context).push(AppPageRoute(builder: (_) => DiagnosticOrderDetailsScreen(orderId: idOf(o)))),
+      scale: 0.985,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.borderStrong)),
+        child: Row(
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(color: labAccent.veryLight, borderRadius: BorderRadius.circular(14)),
+              child: Icon(packages.isNotEmpty ? LucideIcons.packageOpen : LucideIcons.flaskConical, size: 20, color: labAccent.color),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w700, color: AppColors.textStrong)),
+                  Text(
+                    [
+                      mapOf(o['pathologyId'])['labName'] ?? 'Lab',
+                      if (day != null) DateFormat('d MMM').format(day),
+                      home ? 'Home' : 'Lab visit',
+                    ].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary),
+                  ),
+                  const SizedBox(height: 6),
+                  status.pill(),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(appRupees(o['totalAmount']), style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+                if (o['status'] == 'completed') ...[
+                  const SizedBox(height: 6),
+                  Icon(LucideIcons.fileCheck, size: 18, color: labAccent.color),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

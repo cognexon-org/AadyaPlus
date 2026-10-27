@@ -126,6 +126,12 @@ class EPharmacyService {
     return Map<String, dynamic>.from(data['address'] ?? const {});
   }
 
+  Future<void> deleteAddress(String id) async {
+    final response = await http.delete(http.apiUri('/epharmacy/addresses/$id'));
+    final data = _decode(response.body);
+    _assert(response.statusCode, data);
+  }
+
   Future<void> setDefaultAddress(String id) async {
     final response = await http.post(http.apiUri('/epharmacy/addresses/$id/default'));
     final data = _decode(response.body);

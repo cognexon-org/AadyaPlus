@@ -119,7 +119,7 @@ class PushNotificationService {
       );
 
       await _localNotifications.initialize(
-        initializationSettings,
+        settings: initializationSettings,
         onDidReceiveNotificationResponse: (response) {
           final payload = response.payload;
           if (payload == null || payload.isEmpty) return;
@@ -294,10 +294,10 @@ class PushNotificationService {
             DateTime.now().millisecondsSinceEpoch.hashCode) &
         0x7fffffff;
     await _localNotifications.show(
-      localId,
-      title ?? 'Aadya Plus',
-      body ?? '',
-      details,
+      id: localId,
+      title: title ?? 'Aadya Plus',
+      body: body ?? '',
+      notificationDetails: details,
       payload: json.encode(data),
     );
   }

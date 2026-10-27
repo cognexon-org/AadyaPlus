@@ -26,6 +26,15 @@ class Doctor {
   final double? longitude;
   double? distance; // calculated client-side, not final
 
+  // From the directory: where they practise and which visit types they offer.
+  final String clinicName;
+  final String clinicAddress;
+  final List<String> qualifications;
+  final List<String> specialties;
+  final bool clinicEnabled;
+  final bool videoEnabled;
+  final bool homeEnabled;
+
   Doctor({
     required this.id,
     required this.name,
@@ -50,7 +59,29 @@ class Doctor {
     this.latitude,
     this.longitude,
     this.distance,
+    this.clinicName = '',
+    this.clinicAddress = '',
+    this.qualifications = const [],
+    this.specialties = const [],
+    this.clinicEnabled = true,
+    this.videoEnabled = false,
+    this.homeEnabled = false,
   });
+
+  bool get isPhysio => professionalType == 'physio';
+  bool get isVerified => verificationStatus == 'approved' || verificationStatus == 'verified';
+
+  /// The lowest fee among the visit types offered, for "from ₹…" labels.
+  double get fromFee {
+    final fees = [
+      if (clinicEnabled && consultationFee > 0) consultationFee,
+      if (videoEnabled && videoCallFee > 0) videoCallFee,
+      if (homeEnabled && homeVisitFee > 0) homeVisitFee,
+    ];
+    if (fees.isEmpty) return consultationFee;
+    fees.sort();
+    return fees.first;
+  }
 
   factory Doctor.fromJson(Map<String, dynamic> json, {String defaultType = 'doctor'}) {
     return Doctor(

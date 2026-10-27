@@ -52,6 +52,11 @@ android {
         release {
             // Converted to Kotlin syntax for retrieving the config
             signingConfig = signingConfigs.getByName("release")
+            // Keep rules for plugins that break under R8 (see the file).
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 }

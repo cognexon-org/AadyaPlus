@@ -1,3 +1,4 @@
+import 'package:aadya_plus/core/utils/server_dates.dart';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:aadya_plus/services/api_client.dart' as http;
@@ -32,8 +33,10 @@ class AppointmentProvider with ChangeNotifier {
         return;
       }
 
+      // Newest first, so a long history never pushes upcoming visits off
+      // the page (the server's default is the oldest 20).
       final response = await http.get(
-        Uri.parse(AppConstants.appointmentsUrl),
+        Uri.parse('${AppConstants.appointmentsUrl}?limit=100&sort=appointmentDate:desc'),
         headers: {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $token',
@@ -51,7 +54,10 @@ class AppointmentProvider with ChangeNotifier {
           String doctorName = 'Unknown';
           String docId = '';
           String docSpecialty = 'General';
-          String hospital = 'Aadya Clinic';
+          String hospital = '';
+          String clinicName = '';
+          String clinicAddress = '';
+          String imageUrl = '';
           
           if (doc['doctorId'] != null && doc['doctorId'] is Map && professionalType == 'doctor') {
             docId = doc['doctorId']['_id']?.toString() ?? '';
@@ -59,38 +65,36 @@ class AppointmentProvider with ChangeNotifier {
             docSpecialty = (doc['doctorId']['specialization'] != null && (doc['doctorId']['specialization'] as List).isNotEmpty) 
                 ? doc['doctorId']['specialization'][0].toString() 
                 : 'General';
-            // Extract clinic city if available
-            if (doc['doctorId']['clinicAddress'] != null) {
-              hospital = doc['doctorId']['clinicAddress']['city']?.toString() ?? 'Aadya Clinic';
+            clinicName = doc['doctorId']['clinicName']?.toString() ?? '';
+            imageUrl = doc['doctorId']['profileImage']?.toString() ?? '';
+            if (doc['doctorId']['clinicAddress'] is Map) {
+              final a = doc['doctorId']['clinicAddress'] as Map;
+              hospital = a['city']?.toString() ?? '';
+              clinicAddress = [a['address'], a['locality'], a['city']]
+                  .where((e) => e != null && e.toString().trim().isNotEmpty)
+                  .join(', ');
             }
           } else if (doc['physioId'] != null && doc['physioId'] is Map && professionalType == 'physio') {
             docId = doc['physioId']['_id']?.toString() ?? '';
             doctorName = doc['physioId']['name']?.toString() ?? 'Unknown Physio';
-            docSpecialty = 'Physiotherapy';
-            if (doc['physioId']['clinicAddress'] != null) {
-              hospital = doc['physioId']['clinicAddress']['city']?.toString() ?? 'Aadya Clinic';
+            final specs = doc['physioId']['specialization'];
+            docSpecialty = specs is List && specs.isNotEmpty ? specs.first.toString() : 'Physiotherapy';
+            imageUrl = doc['physioId']['profileImage']?.toString() ?? '';
+            if (doc['physioId']['clinicAddress'] is Map) {
+              final a = doc['physioId']['clinicAddress'] as Map;
+              hospital = a['city']?.toString() ?? '';
+              clinicAddress = [a['address'], a['city']]
+                  .where((e) => e != null && e.toString().trim().isNotEmpty)
+                  .join(', ');
             }
           }
 
-          DateTime parsedDate = DateTime.now();
-          String? rawStartTime;
-          if (doc['appointmentDate'] != null) {
-            try {
-              parsedDate = DateTime.parse(doc['appointmentDate'].toString());
-              rawStartTime = doc['startTime']?.toString();
-              if (rawStartTime != null) {
-                final parts = rawStartTime.split(':');
-                if (parts.length >= 2) {
-                  parsedDate = parsedDate.add(Duration(
-                    hours: int.parse(parts[0]),
-                    minutes: int.parse(parts[1])
-                  ));
-                }
-              }
-            } catch (e) {
-              // fallback to now
-            }
-          }
+          // The booked day is the server's local midnight; read it as the
+          // intended calendar day, then add the clinic-local start time.
+          final String? rawStartTime = doc['startTime']?.toString();
+          final DateTime parsedDate =
+              serverDayAt(doc['appointmentDate'], rawStartTime) ??
+              DateTime.now();
 
           return Appointment(
             id: doc['_id']?.toString() ?? '',
@@ -114,6 +118,15 @@ class AppointmentProvider with ChangeNotifier {
             consultationSessionId: doc['consultationSessionId'] is Map ? doc['consultationSessionId']['_id']?.toString() : doc['consultationSessionId']?.toString(),
             professionalType: professionalType,
             duration: doc['duration'] ?? 30,
+            clinicName: clinicName,
+            clinicAddress: clinicAddress,
+            imageUrl: imageUrl,
+            visitAddress: doc['address']?.toString() ?? '',
+            symptomList: doc['symptoms'] is List
+                ? (doc['symptoms'] as List).map((e) => e.toString()).toList()
+                : const [],
+            cancellationReason: doc['cancellationReason']?.toString(),
+            rescheduleCount: (doc['rescheduleCount'] as num?)?.toInt() ?? 0,
           );
         }).toList();
 
@@ -199,10 +212,78 @@ class AppointmentProvider with ChangeNotifier {
     } catch (e) {
       _error = 'Booking error: $e';
       rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
+  }
 
-    _isLoading = false;
-    notifyListeners();
+  /// Books a slot. Returns the new appointment's id and what's owed, so the
+  /// confirmation can offer payment straight away.
+  Future<BookingResult> book({
+    required String professionalId,
+    required String professionalType,
+    required DateTime date,
+    required String startTime,
+    required String visit,
+    List<String> symptoms = const [],
+    String reason = '',
+    String? address,
+    double? latitude,
+    double? longitude,
+  }) async {
+    final body = <String, dynamic>{
+      'professionalId': professionalId,
+      'professionalType': professionalType,
+      'appointmentDate':
+          '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}',
+      'startTime': startTime,
+      'type': visit,
+      'symptoms': symptoms,
+      'reason': reason,
+      if (visit == 'home' && address != null) 'address': address,
+      if (visit == 'home' && latitude != null && longitude != null)
+        'location': {
+          'type': 'Point',
+          'coordinates': [longitude, latitude],
+        },
+    };
+    final response = await http.post(
+      Uri.parse(AppConstants.appointmentsUrl),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(body),
+    );
+    final data = response.body.trim().isEmpty ? <String, dynamic>{} : json.decode(response.body);
+    if (response.statusCode != 201 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'Couldn’t book this slot');
+    }
+    final appointment = data['appointment'] is Map ? data['appointment'] as Map : const {};
+    // Refresh the list in the background; the confirmation doesn't wait.
+    loadAppointments();
+    return BookingResult(
+      appointmentId: (appointment['_id'] ?? '').toString(),
+      amount: ((appointment['totalAmount'] ?? appointment['consultationFee'] ?? 0) as num).toDouble(),
+      paymentRequired: data['paymentRequired'] == true,
+    );
+  }
+
+  /// Moves an appointment to a new slot (the backend allows two moves).
+  Future<void> reschedule(String appointmentId, DateTime at, {String reason = ''}) async {
+    final response = await http.post(
+      Uri.parse('${AppConstants.appointmentsUrl}/$appointmentId/reschedule'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'newDate':
+            '${at.year}-${at.month.toString().padLeft(2, '0')}-${at.day.toString().padLeft(2, '0')}',
+        'newTime': '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}',
+        'reason': reason.isEmpty ? 'Rescheduled by patient' : reason,
+      }),
+    );
+    final data = response.body.trim().isEmpty ? <String, dynamic>{} : json.decode(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['error'] ?? data['message'] ?? 'Couldn’t move this appointment');
+    }
+    await loadAppointments();
   }
 
   Future<void> cancelAppointment(String appointmentId, {String reason = 'Cancelled by patient'}) async {
@@ -234,16 +315,16 @@ class AppointmentProvider with ChangeNotifier {
           _appointments[index] = apt.copyWith(status: 'cancelled');
         }
       } else {
-         throw Exception(responseData['error'] ?? 'Failed to cancel appointment');
+         throw Exception(responseData['error'] ?? responseData['message'] ?? 'Couldn’t cancel this appointment');
       }
 
     } catch (e) {
-       _error = 'Cancellation error: $e';
-       rethrow;
+       _error = e.toString();
+      rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
-
-    _isLoading = false;
-    notifyListeners();
   }
 
   /// Fetch available time slots from the calendar API
@@ -286,29 +367,48 @@ class AppointmentProvider with ChangeNotifier {
     }
   }
 
+  @visibleForTesting
+  void debugSeed(List<Appointment> appointments) {
+    _appointments = appointments;
+    _isLoading = false;
+    notifyListeners();
+  }
+
+  // An appointment stays "upcoming" until its slot has ended, so a video
+  // call that has just started still shows its Join button.
+  bool _ended(Appointment a) =>
+      a.dateTime.add(Duration(minutes: a.duration)).isBefore(DateTime.now());
+
+  static const _stopped = ['cancelled', 'rejected'];
+
   List<Appointment> getUpcomingAppointments() {
-    return _appointments
-        .where((apt) => 
-            apt.dateTime.isAfter(DateTime.now()) && 
-            !['cancelled', 'completed'].contains(apt.status.toLowerCase()))
-        .toList()
+    return _appointments.where((a) => !a.isTerminal && !_ended(a)).toList()
       ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
   }
 
   List<Appointment> getPastAppointments() {
     return _appointments
-        .where((apt) => 
-            apt.dateTime.isBefore(DateTime.now()) || 
-            apt.status.toLowerCase() == 'completed')
-        .where((apt) => apt.status.toLowerCase() != 'cancelled')
+        .where((a) => !_stopped.contains(a.status.toLowerCase()))
+        .where((a) => a.isTerminal || _ended(a))
         .toList()
       ..sort((a, b) => b.dateTime.compareTo(a.dateTime));
   }
 
   List<Appointment> getCancelledAppointments() {
     return _appointments
-        .where((apt) => apt.status.toLowerCase() == 'cancelled')
+        .where((a) => _stopped.contains(a.status.toLowerCase()))
         .toList()
       ..sort((a, b) => b.dateTime.compareTo(a.dateTime));
   }
+}
+
+class BookingResult {
+  final String appointmentId;
+  final double amount;
+  final bool paymentRequired;
+  const BookingResult({
+    required this.appointmentId,
+    required this.amount,
+    required this.paymentRequired,
+  });
 }

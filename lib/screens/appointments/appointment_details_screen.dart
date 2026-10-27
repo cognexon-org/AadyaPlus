@@ -1,21 +1,27 @@
-import 'package:aadya_plus/models/appointment.dart';
-import 'package:aadya_plus/models/doctor.dart';
-import 'package:aadya_plus/providers/appointment_provider.dart';
-import 'package:aadya_plus/screens/appointments/consultation_screen.dart';
-import 'package:aadya_plus/screens/appointments/prescription_details_screen.dart';
-import 'package:aadya_plus/screens/chat/chat_screen.dart';
-import 'package:aadya_plus/screens/payments/payment_checkout_screen.dart';
-import 'package:aadya_plus/utils/constants.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:iconsax/iconsax.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/ui/app_ui.dart';
+import '../../models/appointment.dart';
+import '../../models/doctor.dart';
+import '../../providers/appointment_provider.dart';
+import '../../providers/doctor_provider.dart';
+import '../../services/feedback_service.dart';
+import '../../widgets/appointment_sheets.dart';
+import '../chat/chat_screen.dart';
+import '../doctors/doctor_detail_screen.dart';
+import '../payments/payment_checkout_screen.dart';
+import 'consultation_screen.dart';
+import 'prescription_details_screen.dart';
+import 'reschedule_appointment_screen.dart';
+
+/// One appointment in full: where it stands, when and where it happens,
+/// what was paid, and what can be done with it now.
 class AppointmentDetailsScreen extends StatefulWidget {
   final Appointment appointment;
-
   const AppointmentDetailsScreen({super.key, required this.appointment});
 
   @override
@@ -23,283 +29,339 @@ class AppointmentDetailsScreen extends StatefulWidget {
 }
 
 class _AppointmentDetailsScreenState extends State<AppointmentDetailsScreen> {
-  late String _paymentStatus;
+  bool? _reviewed;
 
   @override
   void initState() {
     super.initState();
-    _paymentStatus = widget.appointment.paymentStatus;
-  }
-
-  bool get _isPaid => _paymentStatus == 'paid' || widget.appointment.totalAmount <= 0;
-
-  void _openChat() {
-    final stubDoctor = Doctor(
-      id: widget.appointment.doctorId,
-      name: widget.appointment.doctorName,
-      specialty: widget.appointment.specialty,
-      hospital: widget.appointment.hospital,
-      rating: 5.0,
-      reviews: 0,
-      consultationFee: widget.appointment.consultationFee,
-      experience: 0,
-      imageUrl: 'https://ui-avatars.com/api/?name=${Uri.encodeComponent(widget.appointment.doctorName)}',
-      description: '',
-      languages: const [],
-      availability: const {},
-      professionalType: widget.appointment.professionalType,
-    );
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(doctor: stubDoctor, appointmentId: widget.appointment.id),
-      ),
-    );
-  }
-
-  Future<void> _openGoogleMaps() async {
-    final uri = Uri.parse(
-      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(widget.appointment.hospital)}',
-    );
-    if (await canLaunchUrl(uri)) await launchUrl(uri);
-  }
-
-  Future<void> _pay() async {
-    final paid = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PaymentCheckoutScreen(
-          entityType: 'appointment',
-          entityId: widget.appointment.id,
-          title: 'Consultation with ${widget.appointment.doctorName}',
-          expectedAmount: widget.appointment.totalAmount,
-        ),
-      ),
-    );
-    if (paid == true && mounted) {
-      setState(() => _paymentStatus = 'paid');
-      await context.read<AppointmentProvider>().loadAppointments();
+    if (widget.appointment.status == 'completed') {
+      FeedbackService.instance.reviewedAppointmentIds().then((ids) {
+        if (mounted) setState(() => _reviewed = ids.contains(widget.appointment.id));
+      }).catchError((_) {});
     }
+  }
+
+  /// The freshest copy of this appointment the app has.
+  Appointment get _a {
+    for (final a in context.watch<AppointmentProvider>().appointments) {
+      if (a.id == widget.appointment.id) return a;
+    }
+    return widget.appointment;
+  }
+
+  Future<void> _push(Widget screen) async {
+    await Navigator.of(context).push(AppPageRoute(builder: (_) => screen));
+    if (mounted) context.read<AppointmentProvider>().loadAppointments();
+  }
+
+  void _chat(Appointment a) {
+    final known = context.read<DoctorProvider>().findById(a.doctorId);
+    final doctor = known ??
+        Doctor(
+          id: a.doctorId,
+          name: a.doctorName,
+          specialty: a.specialty,
+          hospital: a.hospital,
+          rating: 0,
+          reviews: 0,
+          consultationFee: a.consultationFee,
+          experience: 0,
+          imageUrl: a.imageUrl,
+          description: '',
+          languages: const [],
+          availability: const {},
+          professionalType: a.professionalType,
+        );
+    _push(ChatScreen(doctor: doctor, appointmentId: a.id));
+  }
+
+  Future<void> _directions(Appointment a) async {
+    final q = Uri.encodeComponent([a.clinicName, a.clinicAddress].where((e) => e.isNotEmpty).join(', '));
+    await launchUrl(
+      Uri.parse('https://www.google.com/maps/search/?api=1&query=$q'),
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  (String, String) _banner(Appointment a) {
+    final who = a.isPhysio ? 'your physio' : a.doctorName;
+    return switch (a.status.toLowerCase()) {
+      'pending' => ('Waiting for confirmation', '$who will confirm this booking soon.'),
+      'confirmed' || 'accepted' || 'rescheduled' => (
+        'You’re all set',
+        a.isVideo ? 'Join from here up to 15 minutes before the start.' : 'Please arrive 10 minutes early.',
+      ),
+      'in_progress' => ('Happening now', a.isVideo ? 'Your call is open — join now.' : 'Your visit is in progress.'),
+      'completed' => ('Visit completed', a.prescriptionId != null ? 'Your prescription is ready below.' : 'Hope you’re feeling better.'),
+      'cancelled' => ('Cancelled', a.cancellationReason?.isNotEmpty == true ? a.cancellationReason! : 'This booking was cancelled.'),
+      'rejected' => ('Declined', '$who couldn’t take this booking. Try another time or doctor.'),
+      'no_show' => ('Marked as missed', 'Book again whenever you’re ready.'),
+      _ => (PatientStatus.of(a.status).label, ''),
+    };
   }
 
   @override
   Widget build(BuildContext context) {
-    final appointment = widget.appointment;
-    final statusColor = AppConstants.getStatusColor(appointment.status);
-    final dateStr = DateFormat('dd/MM/yyyy').format(appointment.dateTime.toLocal());
-    final timeStr = DateFormat('hh:mm a').format(appointment.dateTime.toLocal());
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        surfaceTintColor: Colors.white,
-        title: Text(
-          'Appointment Details',
-          style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, fontSize: 20),
-        ),
-        backgroundColor: Colors.white,
-        foregroundColor: AppConstants.textColor,
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _card(
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    final a = _a;
+    final accent = a.isPhysio ? ModuleAccent.physio : ModuleAccent.doctor;
+    final status = PatientStatus.of(a.status);
+    final (title, line) = _banner(a);
+    final (visitIcon, visitLabel) = switch (a.appointmentType.toLowerCase()) {
+      'video' => (LucideIcons.video, 'Video call'),
+      'home' => (LucideIcons.house, 'Home visit'),
+      _ => (LucideIcons.building2, 'Clinic visit'),
+    };
+    final active = !a.isTerminal;
+    return ModuleTheme(
+      accent: accent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: const AppTopBar(title: 'Appointment'),
+        body: RefreshIndicator(
+          color: accent.color,
+          onRefresh: () => context.read<AppointmentProvider>().loadAppointments(),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+            children: [
+              AppEntrance(
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(color: status.background, borderRadius: BorderRadius.circular(16)),
+                  child: Row(
                     children: [
-                      const Text('Status', style: TextStyle(fontWeight: FontWeight.w600)),
-                      _badge(appointment.status.toUpperCase(), statusColor),
-                    ],
-                  ),
-                  const Divider(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      _infoCol('Date', dateStr, Iconsax.calendar),
-                      _infoCol('Time', timeStr, Iconsax.clock),
-                      _infoCol(
-                        'Type',
-                        appointment.isVideo ? 'VIDEO' : appointment.appointmentType.toUpperCase(),
-                        appointment.isVideo ? Iconsax.video : Iconsax.hospital,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text('Professional Information', style: _sectionStyle()),
-            const SizedBox(height: 12),
-            _card(
-              child: Column(
-                children: [
-                  Row(
-                    children: [
-                      CircleAvatar(
-                        radius: 25,
-                        backgroundColor: AppConstants.primaryColor,
-                        child: Text(
-                          appointment.doctorName.isNotEmpty ? appointment.doctorName[0] : 'D',
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
+                      Icon(status.icon, size: 22, color: status.color),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(appointment.doctorName, style: const TextStyle(fontWeight: FontWeight.w800)),
-                            Text(appointment.specialty, style: TextStyle(color: Colors.grey.shade600)),
+                            Text(
+                              title,
+                              style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: status.color),
+                            ),
+                            if (line.isNotEmpty)
+                              Text(line, style: AppType.sans(fontSize: AppType.small, height: 1.4, color: AppColors.textPrimary)),
                           ],
                         ),
                       ),
-                      IconButton(onPressed: _openChat, icon: const Icon(Iconsax.messages_2, color: AppConstants.primaryColor)),
                     ],
                   ),
-                  const Divider(height: 26),
-                  _detailRow('Hospital/Clinic', appointment.hospital),
-                  const SizedBox(height: 8),
-                  _detailRow('Symptoms', appointment.symptoms ?? 'N/A'),
-                  const SizedBox(height: 8),
-                  _detailRow('Reason', appointment.reason ?? 'N/A'),
-                  if (!appointment.isVideo) ...[
-                    const SizedBox(height: 14),
-                    InkWell(
-                      onTap: _openGoogleMaps,
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppConstants.primaryColor.withOpacity(0.05),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Row(
+                ),
+              ),
+              const SizedBox(height: 14),
+              AppEntrance(
+                index: 1,
+                child: AppCard(
+                  onTap: context.read<DoctorProvider>().findById(a.doctorId) == null
+                      ? null
+                      : () => _push(DoctorDetailScreen(doctorId: a.doctorId)),
+                  child: Row(
+                    children: [
+                      AppAvatar(name: a.doctorName, imageUrl: a.imageUrl, size: 50, radius: 15, color: accent.color),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Iconsax.location5, color: AppConstants.primaryColor),
-                            SizedBox(width: 10),
-                            Expanded(child: Text('View clinic location on Google Maps')),
-                            Icon(Iconsax.routing, color: AppConstants.primaryColor),
+                            Text(
+                              a.doctorName,
+                              style: AppType.sans(fontSize: AppType.title, fontWeight: FontWeight.w800, color: AppColors.textStrong),
+                            ),
+                            Text(a.specialty, style: AppType.sans(fontSize: AppType.small, color: AppColors.textSecondary)),
                           ],
                         ),
                       ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            if (appointment.isVideo && !appointment.isTerminal) ...[
-              const SizedBox(height: 20),
-              Text('Video Consultation', style: _sectionStyle()),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => ConsultationScreen(appointment: appointment)),
-                  ),
-                  icon: Icon(_isPaid ? Icons.videocam_outlined : Icons.lock_outline),
-                  label: Text(_isPaid ? 'Open waiting room' : 'Pay & prepare consultation'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _isPaid ? Colors.green : Colors.orange,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 15),
+                      if (active || a.status == 'completed')
+                        IconButton.filledTonal(
+                          tooltip: 'Message',
+                          onPressed: () => _chat(a),
+                          style: IconButton.styleFrom(backgroundColor: accent.veryLight, foregroundColor: accent.color),
+                          icon: const Icon(LucideIcons.messageCircle, size: 19),
+                        ),
+                    ],
                   ),
                 ),
               ),
-            ],
-            if (appointment.prescriptionId != null && appointment.prescriptionId!.isNotEmpty) ...[
-              const SizedBox(height: 20),
-              Text('Medical Documents', style: _sectionStyle()),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => PrescriptionDetailsScreen(prescriptionId: appointment.prescriptionId!),
-                    ),
+              const SizedBox(height: 14),
+              AppEntrance(
+                index: 2,
+                child: AppCard(
+                  child: Column(
+                    children: [
+                      _Row(LucideIcons.calendarDays, DateFormat('EEEE, d MMMM y').format(a.dateTime)),
+                      _Row(LucideIcons.clock, '${DateFormat('h:mm a').format(a.dateTime)} · ${a.duration} min'),
+                      _Row(visitIcon, visitLabel),
+                      if (a.appointmentType == 'clinic' && (a.clinicName.isNotEmpty || a.clinicAddress.isNotEmpty))
+                        _Row(
+                          LucideIcons.mapPin,
+                          [a.clinicName, a.clinicAddress].where((e) => e.isNotEmpty).join('\n'),
+                          trailing: TextButton(onPressed: () => _directions(a), child: const Text('Directions')),
+                        ),
+                      if (a.appointmentType == 'home' && a.visitAddress.isNotEmpty)
+                        _Row(LucideIcons.mapPin, a.visitAddress),
+                      if (a.rescheduleCount > 0)
+                        _Row(LucideIcons.calendarClock, 'Rescheduled ${a.rescheduleCount} of 2 times'),
+                    ],
                   ),
-                  icon: const Icon(Iconsax.document_text_1),
-                  label: const Text('View e-prescription'),
                 ),
               ),
-            ],
-            const SizedBox(height: 20),
-            Text('Payment Details', style: _sectionStyle()),
-            const SizedBox(height: 12),
-            _card(
-              child: Column(
-                children: [
-                  _detailRow('Consultation Fee', '₹${appointment.consultationFee.toStringAsFixed(2)}'),
-                  const Divider(height: 24),
-                  _detailRow('Total', '₹${appointment.totalAmount.toStringAsFixed(2)}'),
-                  const SizedBox(height: 10),
-                  _detailRow('Payment Status', _isPaid ? 'PAID' : _paymentStatus.toUpperCase()),
-                  if (!_isPaid && appointment.totalAmount > 0 && !appointment.isTerminal) ...[
-                    const SizedBox(height: 14),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: _pay,
-                        child: const Text('Pay now'),
+              if (a.symptomList.isNotEmpty || (a.reason ?? '').isNotEmpty) ...[
+                const SizedBox(height: 14),
+                AppCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Reason for visit', style: AppType.sans(fontSize: AppType.small, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+                      if (a.symptomList.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final s in a.symptomList)
+                              AppStatusPill(text: s, color: AppColors.textPrimary, background: AppColors.panel),
+                          ],
+                        ),
+                      ],
+                      if ((a.reason ?? '').isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(a.reason!, style: AppType.sans(fontSize: AppType.body, height: 1.45, color: AppColors.textPrimary)),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              AppCard(
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Consultation fee', style: AppType.sans(fontSize: AppType.small, color: AppColors.textSecondary)),
+                          Text(
+                            a.totalAmount > 0 ? appRupees(a.totalAmount) : 'Free',
+                            style: AppType.sans(fontSize: AppType.figure, fontWeight: FontWeight.w800, color: AppColors.textStrong),
+                          ),
+                        ],
                       ),
                     ),
+                    if (a.totalAmount > 0) PatientStatus.of(a.paymentStatus == 'pending' ? 'payment_pending' : a.paymentStatus).pill(),
                   ],
-                ],
+                ),
               ),
-            ),
-            const SizedBox(height: 40),
-          ],
+              if (a.prescriptionId != null && a.prescriptionId!.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                AppCard(
+                  onTap: () => _push(PrescriptionDetailsScreen(prescriptionId: a.prescriptionId!)),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(color: AppColors.brandVeryLight, borderRadius: BorderRadius.circular(12)),
+                        child: const Icon(LucideIcons.fileText, size: 19, color: AppColors.brand),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'View prescription',
+                          style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w700, color: AppColors.textStrong),
+                        ),
+                      ),
+                      const Icon(LucideIcons.chevronRight, size: 18, color: AppColors.textTertiary),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 22),
+              ..._actions(a),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  TextStyle _sectionStyle() => GoogleFonts.plusJakartaSans(
-        fontSize: 16,
-        fontWeight: FontWeight.w700,
-        color: AppConstants.textColor,
-      );
+  List<Widget> _actions(Appointment a) {
+    final out = <Widget>[];
+    void add(Widget w) {
+      if (out.isNotEmpty) out.add(const SizedBox(height: 10));
+      out.add(w);
+    }
 
-  Widget _card({required Widget child}) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade200),
+    if (!a.isTerminal) {
+      if (a.isVideo) {
+        add(AppButton(
+          label: a.paymentRequired ? 'Pay and prepare call' : 'Open video consultation',
+          icon: LucideIcons.video,
+          onPressed: () => _push(ConsultationScreen(appointment: a)),
+        ));
+      } else if (a.totalAmount > 0 && !a.isPaid) {
+        add(AppButton(
+          label: 'Pay ${appRupees(a.totalAmount)} now',
+          icon: LucideIcons.creditCard,
+          onPressed: () => _push(PaymentCheckoutScreen(
+            entityType: 'appointment',
+            entityId: a.id,
+            title: 'Consultation with ${a.doctorName}',
+            expectedAmount: a.totalAmount,
+          )),
+        ));
+      }
+      if (a.canReschedule) {
+        add(AppSecondaryButton(
+          label: 'Reschedule',
+          icon: LucideIcons.calendarClock,
+          onPressed: () => _push(RescheduleAppointmentScreen(appointment: a)),
+        ));
+      }
+      add(TextButton(
+        onPressed: () async {
+          final messenger = ScaffoldMessenger.of(context);
+          if (await showCancelAppointmentSheet(context, a)) {
+            messenger.showSnackBar(const SnackBar(content: Text('Appointment cancelled')));
+          }
+        },
+        style: TextButton.styleFrom(foregroundColor: AppColors.error),
+        child: const Text('Cancel appointment'),
+      ));
+    } else if (a.status == 'completed' && _reviewed == false) {
+      add(AppSecondaryButton(
+        label: 'Rate this visit',
+        icon: LucideIcons.star,
+        onPressed: () async {
+          if (await showReviewSheet(context, a)) setState(() => _reviewed = true);
+        },
+      ));
+    }
+    return out;
+  }
+}
+
+class _Row extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  final Widget? trailing;
+  const _Row(this.icon, this.text, {this.trailing});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 6),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: Icon(icon, size: 17, color: ModuleAccent.of(context).color),
         ),
-        child: child,
-      );
-
-  Widget _badge(String text, Color color) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-        child: Text(text, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color)),
-      );
-
-  Widget _infoCol(String label, String value, IconData icon) => Column(
-        children: [
-          Icon(icon, size: 20, color: Colors.grey.shade500),
-          const SizedBox(height: 8),
-          Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-          Text(label, style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-        ],
-      );
-
-  Widget _detailRow(String label, String value) => Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(flex: 2, child: Text(label, style: TextStyle(color: Colors.grey.shade600))),
-          Expanded(
-            flex: 3,
-            child: Text(value, textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600)),
-          ),
-        ],
-      );
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(text, style: AppType.sans(fontSize: AppType.body + 0.5, height: 1.4, color: AppColors.textPrimary)),
+        ),
+        ?trailing,
+      ],
+    ),
+  );
 }

@@ -17,6 +17,20 @@ class PhysioExerciseService {
         .toList();
   }
 
+  /// Treatment courses a physio has set up for the patient (sessions used
+  /// of the total, goals).
+  Future<List<Map<String, dynamic>>> getMyCourses() async {
+    final response = await api.get(api.apiUri('/physio-care/my-courses'));
+    final data = _decode(response.body);
+    if (response.statusCode < 200 || response.statusCode >= 300 || data['success'] != true) {
+      throw Exception(data['error'] ?? 'Unable to load treatment courses');
+    }
+    return (data['courses'] as List? ?? const [])
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
   Future<Map<String, dynamic>> getPlan(String planId) async {
     final response = await api.get(api.apiUri('/physio-exercises/my-plans/$planId'));
     final data = _decode(response.body);

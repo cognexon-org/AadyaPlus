@@ -7,9 +7,11 @@ import 'package:aadya_plus/screens/appointments/prescription_details_screen.dart
 import 'package:aadya_plus/screens/appointments/video_call_screen.dart';
 import 'package:aadya_plus/screens/payments/payment_checkout_screen.dart';
 import 'package:aadya_plus/services/consultation_service.dart';
-import 'package:aadya_plus/utils/constants.dart';
+import 'package:aadya_plus/core/ui/app_ui.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' show DateFormat;
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 class ConsultationScreen extends StatefulWidget {
@@ -28,11 +30,16 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
   bool _consentChecked = false;
   String? _error;
   Timer? _refreshTimer;
+  Timer? _clock;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // The countdown ticks every second; the server is asked every 15.
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
     _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       final state = _snapshot?.session;
       if (mounted && state != null && !state.isEnded) {
@@ -44,6 +51,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _clock?.cancel();
     super.dispose();
   }
 
@@ -75,7 +83,7 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
   Future<void> _checkIn() async {
     if (widget.appointment.isVideo && !_consentChecked) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please accept teleconsultation consent before check-in.')),
+        const SnackBar(content: Text('Tick the consent box to check in')),
       );
       return;
     }
@@ -94,7 +102,45 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
     }
   }
 
+  /// Camera and microphone, asked for before the call opens. Without the
+  /// runtime grant Android gives the call page no camera or mic at all.
+  Future<bool> _ensureCallPermissions() async {
+    final statuses = await [Permission.camera, Permission.microphone].request();
+    if (statuses.values.every((s) => s.isGranted)) return true;
+    if (!mounted) return false;
+    final blocked = statuses.values.any((s) => s.isPermanentlyDenied);
+    final open = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Camera and microphone needed'),
+        content: Text(
+          blocked
+              ? 'Allow camera and microphone for Aadya Plus in Settings to join the video consultation.'
+              : 'The doctor needs to see and hear you. Allow camera and microphone to join.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(blocked ? 'Open settings' : 'Try again'),
+          ),
+        ],
+      ),
+    );
+    if (open != true) return false;
+    if (blocked) {
+      await openAppSettings();
+      return false;
+    }
+    return _ensureCallPermissions();
+  }
+
   Future<void> _join() async {
+    if (!await _ensureCallPermissions()) return;
+    if (!mounted) return;
     setState(() => _actionBusy = true);
     try {
       final result = await ConsultationService.instance.join(widget.appointment.id);
@@ -137,260 +183,345 @@ class _ConsultationScreenState extends State<ConsultationScreen> {
 
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
+      SnackBar(content: Text(message.replaceFirst(RegExp(r'^\w*Exception:\s*'), '')), backgroundColor: AppColors.error),
     );
   }
 
-  String _statusLabel(String status) {
-    switch (status) {
-      case 'patient_waiting':
-        return 'You are checked in';
-      case 'professional_ready':
-        return 'Doctor is ready';
-      case 'in_progress':
-        return 'Consultation in progress';
-      case 'ended':
-        return 'Consultation completed';
-      case 'cancelled':
-        return 'Consultation cancelled';
-      case 'no_show':
-        return 'Marked as no-show';
-      default:
-        return 'Scheduled';
-    }
+  ModuleAccent get _accent => widget.appointment.isPhysio ? ModuleAccent.physio : ModuleAccent.doctor;
+
+  /// 0 pay, 1 check in, 2 waiting, 3 join, 4 done.
+  int _stage(ConsultationSessionState s) {
+    if (s.isEnded) return 4;
+    if (s.paymentRequired) return 0;
+    if (s.canJoin) return 3;
+    if (s.isCheckedIn) return 2;
+    return 1;
+  }
+
+  String _countdown(DateTime at) {
+    final d = at.difference(DateTime.now());
+    if (d.isNegative) return 'now';
+    if (d.inDays >= 1) return 'in ${d.inDays} day${d.inDays == 1 ? '' : 's'}';
+    final h = d.inHours, m = d.inMinutes % 60, sec = d.inSeconds % 60;
+    if (h > 0) return 'in ${h}h ${m}m';
+    return 'in ${m}m ${sec.toString().padLeft(2, '0')}s';
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: const Text('Consultation'),
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
-        actions: [
-          IconButton(onPressed: _loading ? null : () => _load(), icon: const Icon(Icons.refresh)),
-        ],
+    return ModuleTheme(
+      accent: _accent,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        appBar: const AppTopBar(title: 'Video consultation'),
+        body: _loading
+            ? const AppDetailSkeleton()
+            : _error != null
+            ? Center(
+                child: AppEmptyState(
+                  illustration: Illustrations.offline,
+                  title: 'Couldn’t open the consultation',
+                  message: _error!.replaceFirst(RegExp(r'^\w*Exception:\s*'), ''),
+                  actionLabel: 'Try again',
+                  onAction: _load,
+                ),
+              )
+            : RefreshIndicator(color: _accent.color, onRefresh: _load, child: _content()),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? _buildError()
-              : RefreshIndicator(
-                  onRefresh: () => _load(),
-                  child: ListView(
-                    padding: const EdgeInsets.all(18),
-                    children: _buildContent(),
+    );
+  }
+
+  Widget _content() {
+    final s = _snapshot!.session;
+    final a = widget.appointment;
+    final stage = _stage(s);
+    final scheduled = s.scheduledAt ?? a.dateTime;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+      children: [
+        AppEntrance(
+          child: Column(
+            children: [
+              _Presence(name: a.doctorName, live: stage == 3 || s.isInProgress, waiting: stage == 2, accent: _accent),
+              const SizedBox(height: 14),
+              Text(a.doctorName, style: AppType.sans(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.textStrong)),
+              Text(a.specialty, style: AppType.sans(fontSize: AppType.small, color: AppColors.textSecondary)),
+              const SizedBox(height: 8),
+              Text(
+                DateFormat('EEEE, d MMM · h:mm a').format(scheduled),
+                style: AppType.sans(fontSize: AppType.body, fontWeight: FontWeight.w600, color: _accent.color),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 22),
+        if (stage < 4) AppEntrance(index: 1, child: _Steps(stage: stage, accent: _accent)),
+        const SizedBox(height: 18),
+        AppEntrance(index: 2, child: _stageCard(s, stage)),
+        if (stage == 4) ..._summary(s),
+      ],
+    );
+  }
+
+  Widget _stageCard(ConsultationSessionState s, int stage) {
+    final a = widget.appointment;
+    switch (stage) {
+      case 0:
+        return _Panel(
+          icon: LucideIcons.creditCard,
+          title: 'Pay to confirm your call',
+          body: '${appRupees(a.totalAmount)} is due before you can check in.',
+          action: AppButton(label: 'Pay ${appRupees(a.totalAmount)}', icon: LucideIcons.lock, loading: _actionBusy, onPressed: _pay),
+        );
+      case 1:
+        final opens = s.joinOpensAt;
+        return _Panel(
+          icon: LucideIcons.clipboardCheck,
+          title: s.canCheckIn ? 'Check in when you’re ready' : 'Check-in opens ${opens == null ? 'soon' : _countdown(opens)}',
+          body: s.canCheckIn
+              ? 'Find a quiet, well-lit place. Your ${a.isPhysio ? 'physio' : 'doctor'} is told you’re waiting.'
+              : 'You can check in from 15 minutes before the start. This page updates by itself.',
+          child: a.isVideo
+              ? InkWell(
+                  onTap: _actionBusy ? null : () => setState(() => _consentChecked = !_consentChecked),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Checkbox(
+                        value: _consentChecked,
+                        activeColor: _accent.color,
+                        onChanged: _actionBusy ? null : (v) => setState(() => _consentChecked = v == true),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Text(
+                            'I agree to consult by video. What’s discussed is kept in my Aadya Plus health record.',
+                            style: AppType.sans(fontSize: AppType.small, height: 1.4, color: AppColors.textPrimary),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              : null,
+          action: AppButton(
+            label: 'Check in',
+            icon: LucideIcons.logIn,
+            loading: _actionBusy,
+            onPressed: s.canCheckIn && (!a.isVideo || _consentChecked) ? _checkIn : null,
+          ),
+        );
+      case 2:
+        return const _Panel(
+          icon: LucideIcons.armchair,
+          title: 'You’re in the waiting room',
+          body: 'We’ll open the call as soon as they’re ready. Keep this screen open.',
+        );
+      case 3:
+        return _Panel(
+          icon: LucideIcons.video,
+          title: s.isInProgress ? 'Your call is live' : 'They’re ready for you',
+          body: 'You’ll be asked for camera and microphone access.',
+          action: AppButton(label: s.isInProgress ? 'Rejoin call' : 'Join video call', icon: LucideIcons.video, loading: _actionBusy, onPressed: _join),
+        );
+      default:
+        return _Panel(
+          icon: s.status == 'ended' ? LucideIcons.circleCheckBig : LucideIcons.circleX,
+          title: s.status == 'ended' ? 'Consultation finished' : PatientStatus.of(s.status).label,
+          body: s.status == 'ended' ? 'Here’s what was noted.' : '',
+        );
+    }
+  }
+
+  List<Widget> _summary(ConsultationSessionState s) {
+    final c = s.clinicalSummary;
+    String text(dynamic v) => v is List ? v.map((e) => e.toString()).where((e) => e.trim().isNotEmpty).join(', ') : (v?.toString() ?? '');
+    final rows = [
+      ('Diagnosis', text(c?['diagnosis'])),
+      ('Advice', text(c?['advice'])),
+      ('Follow-up', text(c?['followUpNotes'])),
+    ].where((r) => r.$2.isNotEmpty).toList();
+    return [
+      if (rows.isNotEmpty) ...[
+        const SizedBox(height: 14),
+        AppCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final (label, value) in rows)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(label, style: AppType.sans(fontSize: AppType.caption, color: AppColors.textSecondary)),
+                      Text(value, style: AppType.sans(fontSize: AppType.body + 0.5, fontWeight: FontWeight.w600, color: AppColors.textStrong)),
+                    ],
                   ),
                 ),
-    );
-  }
-
-  Widget _buildError() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.error_outline, color: Colors.red, size: 42),
-            const SizedBox(height: 12),
-            Text(_error ?? 'Unable to load consultation', textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            ElevatedButton(onPressed: () => _load(), child: const Text('Retry')),
-          ],
-        ),
-      ),
-    );
-  }
-
-  List<Widget> _buildContent() {
-    final session = _snapshot!.session;
-    final scheduled = session.scheduledAt ?? widget.appointment.dateTime;
-    final clinical = session.clinicalSummary;
-
-    return [
-      _card(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.appointment.doctorName, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-            const SizedBox(height: 4),
-            Text(widget.appointment.specialty, style: const TextStyle(color: AppConstants.primaryColor, fontWeight: FontWeight.w700)),
-            const Divider(height: 28),
-            _row(Icons.calendar_today_outlined, DateFormat('dd MMM yyyy, hh:mm a').format(scheduled)),
-            const SizedBox(height: 10),
-            _row(widget.appointment.isVideo ? Icons.videocam_outlined : Icons.local_hospital_outlined,
-                widget.appointment.isVideo ? 'Video consultation' : widget.appointment.appointmentType),
-            const SizedBox(height: 10),
-            _row(Icons.info_outline, _statusLabel(session.status)),
-          ],
-        ),
-      ),
-      const SizedBox(height: 14),
-      if (session.paymentRequired)
-        _card(
-          color: Colors.orange.shade50,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Payment required', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 6),
-              Text('Pay ₹${widget.appointment.totalAmount.toStringAsFixed(2)} before checking in to this video consultation.'),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _actionBusy ? null : _pay,
-                  child: const Text('Pay now'),
-                ),
-              ),
             ],
           ),
-        )
-      else if (!session.isEnded) ...[
-        if (widget.appointment.isVideo && !session.isCheckedIn)
-          _card(
-            child: CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _consentChecked,
-              onChanged: _actionBusy ? null : (value) => setState(() => _consentChecked = value == true),
-              title: const Text('Teleconsultation consent', style: TextStyle(fontWeight: FontWeight.w700)),
-              subtitle: const Text('I consent to receiving this consultation by video and understand that clinical information will be handled as part of my AadyaMed record.'),
-              controlAffinity: ListTileControlAffinity.leading,
-            ),
-          ),
-        if (session.canCheckIn && !session.isCheckedIn) ...[
-          const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _actionBusy ? null : _checkIn,
-              icon: const Icon(Icons.how_to_reg_outlined),
-              label: const Text('Check in'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppConstants.primaryColor,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-            ),
-          ),
-        ],
-        if (session.isCheckedIn && !session.canJoin) ...[
-          const SizedBox(height: 14),
-          _card(
-            color: Colors.blue.shade50,
-            child: const Row(
-              children: [
-                SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)),
-                SizedBox(width: 12),
-                Expanded(child: Text('You are in the waiting room. This screen refreshes automatically while the professional prepares the consultation.')),
-              ],
-            ),
-          ),
-        ],
-        if (session.canJoin) ...[
-          const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _actionBusy ? null : _join,
-              icon: const Icon(Icons.videocam),
-              label: Text(session.isInProgress ? 'Join consultation' : 'Enter video room'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.green,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 15),
-              ),
-            ),
-          ),
-        ],
-        if (!session.canCheckIn && !session.isCheckedIn) ...[
-          const SizedBox(height: 14),
-          _card(
-            color: Colors.grey.shade100,
-            child: Text(
-              session.joinOpensAt != null
-                  ? 'Check-in opens ${DateFormat('dd MMM, hh:mm a').format(session.joinOpensAt!)}.'
-                  : 'Check-in is not open yet.',
-            ),
-          ),
-        ],
+        ),
       ],
-      if (session.isEnded) ...[
+      if (widget.appointment.prescriptionId != null && widget.appointment.prescriptionId!.isNotEmpty) ...[
         const SizedBox(height: 14),
-        _card(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Consultation summary', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 12),
-              _summaryLine('Diagnosis', clinical?['diagnosis']),
-              _summaryLine('Advice', clinical?['advice']),
-              _summaryLine('Follow-up', clinical?['followUpNotes']),
-            ],
+        AppButton(
+          label: 'View prescription',
+          icon: LucideIcons.fileText,
+          onPressed: () => Navigator.of(context).push(
+            AppPageRoute(builder: (_) => PrescriptionDetailsScreen(prescriptionId: widget.appointment.prescriptionId!)),
           ),
         ),
-        if (widget.appointment.prescriptionId != null && widget.appointment.prescriptionId!.isNotEmpty) ...[
-          const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => PrescriptionDetailsScreen(prescriptionId: widget.appointment.prescriptionId!),
-                ),
-              ),
-              icon: const Icon(Icons.description_outlined),
-              label: const Text('View e-prescription'),
-            ),
-          ),
-        ],
       ],
     ];
   }
+}
 
-  Widget _summaryLine(String label, dynamic value) {
-    String text;
-    if (value is List) {
-      text = value.map((e) => e.toString()).where((e) => e.trim().isNotEmpty).join(', ');
-    } else {
-      text = value?.toString() ?? '';
+/// The professional's avatar: a slow ripple while you wait, a green ring
+/// once the call is open.
+class _Presence extends StatefulWidget {
+  final String name;
+  final bool live;
+  final bool waiting;
+  final ModuleAccent accent;
+  const _Presence({required this.name, required this.live, required this.waiting, required this.accent});
+
+  @override
+  State<_Presence> createState() => _PresenceState();
+}
+
+class _PresenceState extends State<_Presence> with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (AppMotion.reduced(context)) {
+      _c.stop();
+    } else if (!_c.isAnimating) {
+      _c.repeat();
     }
-    if (text.isEmpty) text = '—';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = widget.live ? AppColors.health : widget.accent.color;
+    return SizedBox(
+      width: 140,
+      height: 140,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (_, child) => Stack(
+          alignment: Alignment.center,
+          children: [
+            if (widget.waiting || widget.live)
+              for (final lag in const [0.0, 0.5])
+                Builder(
+                  builder: (_) {
+                    final v = (_c.value + lag) % 1;
+                    return Container(
+                      width: 92 + 48 * v,
+                      height: 92 + 48 * v,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: color.withValues(alpha: 0.35 * (1 - v)), width: 2),
+                      ),
+                    );
+                  },
+                ),
+            child!,
+          ],
+        ),
+        child: Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: color, width: 2.5)),
+          child: AppAvatar(name: widget.name, size: 84, color: widget.accent.color),
+        ),
+      ),
+    );
+  }
+}
+
+class _Steps extends StatelessWidget {
+  final int stage;
+  final ModuleAccent accent;
+  const _Steps({required this.stage, required this.accent});
+
+  static const _labels = ['Pay', 'Check in', 'Wait', 'Join'];
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      for (var i = 0; i < _labels.length; i++) ...[
+        Expanded(
+          child: Column(
+            children: [
+              AnimatedContainer(
+                duration: AppMotion.medium,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: i <= stage ? accent.color : AppColors.borderStrong,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _labels[i],
+                style: AppType.sans(
+                  fontSize: AppType.caption,
+                  fontWeight: i == stage ? FontWeight.w800 : FontWeight.w500,
+                  color: i <= stage ? AppColors.textStrong : AppColors.textTertiary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (i < _labels.length - 1) const SizedBox(width: 6),
+      ],
+    ],
+  );
+}
+
+class _Panel extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String body;
+  final Widget? child;
+  final Widget? action;
+  const _Panel({required this.icon, required this.title, required this.body, this.child, this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = ModuleAccent.of(context);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: accent.veryLight, borderRadius: BorderRadius.circular(18)),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(label, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-          const SizedBox(height: 2),
-          Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+          Row(
+            children: [
+              Icon(icon, size: 21, color: accent.color),
+              const SizedBox(width: 10),
+              Expanded(child: Text(title, style: AppType.sans(fontSize: AppType.title + 1, fontWeight: FontWeight.w800, color: AppColors.textStrong))),
+            ],
+          ),
+          if (body.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(body, style: AppType.sans(fontSize: AppType.small, height: 1.45, color: AppColors.textSecondary)),
+          ],
+          if (child != null) ...[const SizedBox(height: 6), child!],
+          if (action != null) ...[const SizedBox(height: 14), action!],
         ],
       ),
-    );
-  }
-
-  Widget _row(IconData icon, String text) {
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: Colors.grey.shade600),
-        const SizedBox(width: 10),
-        Expanded(child: Text(text)),
-      ],
-    );
-  }
-
-  Widget _card({required Widget child, Color color = Colors.white}) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: child,
     );
   }
 }

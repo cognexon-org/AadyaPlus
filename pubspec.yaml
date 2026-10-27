@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.0.0+3
 
 environment:
   sdk: ^3.11.0
@@ -34,6 +34,11 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  flutter_riverpod: ^2.6.1
+  flutter_animate: ^4.5.2
+  lucide_icons_flutter: ^3.1.19
+  dio: ^5.7.0
+  permission_handler: ^11.3.1
   provider: 
   http: 
   intl: 
@@ -84,6 +89,15 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/
+    # Plus Jakarta Sans, bundled so text renders right without a network
+    # fetch on first launch (google_fonts uses these files when present).
+    - assets/google_fonts/
+    # unDraw illustrations (undraw.co — free for commercial use, no
+    # attribution), recoloured to the Aadya sky blue.
+    - assets/illustrations/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

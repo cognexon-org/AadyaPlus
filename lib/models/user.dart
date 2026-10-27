@@ -10,6 +10,14 @@ class User {
   final String? profileImage;
   final DateTime createdAt;
 
+  /// Notification channels and language, as saved on the account.
+  final Map<String, dynamic> preferences;
+
+  bool notifies(String channel) {
+    final n = preferences['notifications'];
+    return n is Map ? n[channel] != false : true;
+  }
+
   User({
     required this.id,
     this.profileId,
@@ -21,6 +29,7 @@ class User {
     this.profileCompleted = false,
     this.profileImage,
     required this.createdAt,
+    this.preferences = const {},
   });
 
   User copyWith({
@@ -34,6 +43,7 @@ class User {
     bool? profileCompleted,
     String? profileImage,
     DateTime? createdAt,
+    Map<String, dynamic>? preferences,
   }) {
     return User(
       id: id ?? this.id,
@@ -46,6 +56,7 @@ class User {
       profileCompleted: profileCompleted ?? this.profileCompleted,
       profileImage: profileImage ?? this.profileImage,
       createdAt: createdAt ?? this.createdAt,
+      preferences: preferences ?? this.preferences,
     );
   }
 
@@ -65,6 +76,9 @@ class User {
       createdAt: createdAtRaw != null
           ? DateTime.tryParse(createdAtRaw) ?? DateTime.now()
           : DateTime.now(),
+      preferences: json['preferences'] is Map
+          ? Map<String, dynamic>.from(json['preferences'])
+          : const {},
     );
   }
 
@@ -80,6 +94,7 @@ class User {
       'profileCompleted': profileCompleted,
       'profileImage': profileImage,
       'createdAt': createdAt.toIso8601String(),
+      'preferences': preferences,
     };
   }
 }

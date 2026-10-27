@@ -23,6 +23,16 @@ class Appointment {
   final String professionalType;
   final int duration;
 
+  final String clinicName;
+  final String clinicAddress;
+  final String imageUrl;
+
+  /// Where a home visit happens.
+  final String visitAddress;
+  final List<String> symptomList;
+  final String? cancellationReason;
+  final int rescheduleCount;
+
   Appointment({
     required this.id,
     required this.doctorId,
@@ -45,11 +55,23 @@ class Appointment {
     this.consultationSessionId,
     this.professionalType = 'doctor',
     this.duration = 30,
+    this.clinicName = '',
+    this.clinicAddress = '',
+    this.imageUrl = '',
+    this.visitAddress = '',
+    this.symptomList = const [],
+    this.cancellationReason,
+    this.rescheduleCount = 0,
   }) : totalAmount = totalAmount ?? consultationFee;
 
   bool get isVideo => appointmentType.toLowerCase() == 'video';
   bool get isPaid => paymentStatus.toLowerCase() == 'paid' || totalAmount <= 0;
   bool get paymentRequired => isVideo && totalAmount > 0 && !isPaid;
+  bool get isPhysio => professionalType == 'physio';
+
+  /// The backend allows two reschedules per appointment.
+  bool get canReschedule => !isTerminal && rescheduleCount < 2;
+
   bool get isTerminal => const ['completed', 'cancelled', 'rejected', 'no_show']
       .contains(status.toLowerCase());
 
@@ -81,6 +103,13 @@ class Appointment {
       consultationSessionId: consultationSessionId ?? this.consultationSessionId,
       professionalType: professionalType,
       duration: duration,
+      clinicName: clinicName,
+      clinicAddress: clinicAddress,
+      imageUrl: imageUrl,
+      visitAddress: visitAddress,
+      symptomList: symptomList,
+      cancellationReason: cancellationReason,
+      rescheduleCount: rescheduleCount,
     );
   }
 
